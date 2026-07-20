@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Family</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbfaf6">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#100f0c">
+<style>
+  /* Self-hosted so the page never blocks on a third-party request. A Google
+     Fonts <link> is render-blocking and the service worker cannot cache it,
+     which stalls first paint exactly where it matters most: a weak signal in
+     a grocery store. This is the variable font, so 500/600/700 all come from
+     one 33 KB file. */
+  @font-face {
+    font-family: "Baloo 2";
+    font-style: normal;
+    font-weight: 400 800;
+    font-display: swap;
+    src: url("fonts/baloo2-latin.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+                   U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+                   U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+
+  :root {
+    --ink: #16140f;
+    --mute: #6f6a5f;
+    --faint: #a6a094;
+    --line: #ddd8cc;
+    --paper: #fbfaf6;
+    --accent: oklch(68% 0.16 45);
+    /* Same hue as --accent, darkened to clear 4.5:1 on paper. Bright --accent
+       is for fills and rules; anything that is *text* uses this. */
+    --accent-strong: oklch(54% 0.15 45);
+    --accent2: oklch(52% 0.11 190);
+    --edge: #8a8478;
+    --pad: 22px;
+    --display: "Baloo 2", -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
+  body {
+    font: 400 16px/1.45 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+    padding: var(--pad);
+    max-width: 1360px;
+    margin: 0 auto;
+    -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+
+  header { display: flex; justify-content: space-between; align-items: flex-end;
+           gap: 16px; border-bottom: 3px solid var(--ink); border-radius: 2px; padding-bottom: 16px; }
+  .day { font: 600 46px var(--display); line-height: 1; letter-spacing: -0.01em; color: var(--ink); }
+  .sub { font-size: 14px; color: var(--mute); margin-top: 8px; letter-spacing: 0.01em; }
+  .temp { font: 600 46px var(--display); line-height: 1; text-align: right; letter-spacing: -0.01em; color: var(--ink); }
+  .cond { font-size: 14px; color: var(--mute); margin-top: 8px; text-align: right; }
+
+  .cols { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+          gap: 40px; padding-top: 24px; }
+  h2 { font: 700 15px var(--display); letter-spacing: 0.03em; text-transform: uppercase;
+       color: var(--accent2); margin: 0 0 14px; }
+  section + section { margin-top: 32px; }
+
+  /* People are told apart by the shape of the rule, never by colour —
+     e-ink hues are too muddy to carry meaning. */
+  .ev { padding: 3px 0 3px 14px; margin-bottom: 14px; border-left: 3px solid var(--ink); }
+  .ev.her { border-left-style: dashed; }
+  .ev.both { border-left: 0; padding-left: 0; border-top: 2.5px solid var(--ink); padding-top: 10px; }
+  .ev .what { font-size: 18px; font-weight: 500; letter-spacing: -0.005em; }
+  .ev .when { font-size: 13px; color: var(--mute); margin-top: 2px; }
+  .ahead { font-size: 15px; color: var(--mute); line-height: 1.7; }
+  .ahead b { color: var(--accent-strong); font-weight: 600; }
+
+  /* Input and button share one underline so they read as a single control. */
+  .addrow { display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
+            border-bottom: 1.5px solid var(--line); transition: border-color 0.15s ease; }
+  .addrow:focus-within { border-bottom-color: var(--ink); }
+  .add { flex: 1; min-width: 0; font: inherit; font-size: 17px; padding: 13px 2px;
+         border: 0; background: none; color: var(--ink); outline: none; }
+  .add::placeholder { color: var(--faint); }
+  .addbtn { font: 600 14px var(--display); color: var(--accent-strong);
+            background: none; border: 0; padding: 10px 6px; cursor: pointer;
+            border-radius: 6px; flex: none; }
+  .addbtn:disabled { color: var(--faint); cursor: default; }
+  .addbtn:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+
+  /* Crossing something off is one tap and easy to do by accident one-handed,
+     so the row greys out and offers Undo in place for a few seconds first. */
+  .undoInline { margin-left: auto; flex: none; font: 600 13px var(--display);
+                color: var(--accent-strong); background: none; border: 0;
+                padding: 6px 8px; cursor: pointer; border-radius: 6px;
+                text-decoration: underline; }
+  .undoInline:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+             overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { font-size: 17px; padding: 12px 2px; border-bottom: 1px solid var(--line);
+       cursor: pointer; display: flex; justify-content: flex-start;
+       align-items: center; gap: 10px; user-select: none; }
+  li::before { content: ''; width: 17px; height: 17px; flex: none; border-radius: 40% 60% 55% 45% / 50% 45% 55% 50%;
+               border: 2px solid var(--edge); }
+  li:last-child { border-bottom: 0; }
+  li:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; border-radius: 4px; }
+  /* Greyed but still legible — you may be about to undo it. */
+  li.going span:first-of-type { text-decoration: line-through; color: var(--faint); }
+  li.going::before { background: var(--accent); border-color: var(--accent); }
+  li .meta { font-size: 12px; color: var(--faint); white-space: nowrap; margin-left: auto; }
+  li.empty { color: var(--mute); font-style: italic; cursor: default; border-bottom: 0; font-size: 15px; padding-left: 2px; }
+  li.empty::before { display: none; }
+
+  .bar { margin-top: 26px; border: 2.5px solid var(--ink); border-radius: 16px; padding: 16px 20px;
+         display: flex; justify-content: space-between; align-items: baseline; gap: 14px; }
+  .bar .msg { font: 600 21px var(--display); letter-spacing: -0.01em; }
+  .bar .stamp { font-size: 11px; color: var(--faint); white-space: nowrap; }
+  .bar.stale { border-style: dashed; border-color: var(--accent); }
+  .bar.stale .msg { color: var(--accent); }
+  .bar.stale .stamp { color: var(--ink); }
+
+  .pending { font-size: 12px; color: var(--faint); margin-top: 12px; }
+
+  /* Phone: the list is the point. Agenda drops below it. */
+  @media (max-width: 720px) {
+    :root { --pad: 18px; }
+    .cols { grid-template-columns: 1fr; gap: 30px; }
+    .lists { order: -1; }
+    .day, .temp { font-size: 32px; }
+    li { padding: 16px 2px; font-size: 18px; }
+    .add { padding: 16px 2px; font-size: 18px; }
+    .bar .msg { font-size: 18px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #f0efe9; --mute: #a6a196; --faint: #726c60;
+            --line: #35322a; --paper: #100f0c; --accent: oklch(74% 0.1 60);
+            --accent-strong: oklch(74% 0.1 60); --accent2: oklch(78% 0.1 190);
+            --edge: #7d776a; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="day" id="day">—</div>
+    <div class="sub" id="sub"></div>
+  </div>
+  <div>
+    <div class="temp" id="temp">—</div>
+    <div class="cond" id="cond"></div>
+  </div>
+</header>
+
+<div class="cols">
+  <div>
+    <section>
+      <h2>Today</h2>
+      <div id="today"></div>
+    </section>
+    <section>
+      <h2 id="aheadLabel">Tomorrow</h2>
+      <div class="ahead" id="ahead"></div>
+    </section>
+  </div>
+
+  <div class="lists">
+    <section>
+      <h2>Shopping</h2>
+      <div class="addrow">
+        <input class="add" id="addShopping" placeholder="Add to shopping" autocomplete="off"
+               enterkeyhint="done" aria-label="Add to shopping list">
+        <button class="addbtn" type="button" id="addShoppingBtn">Add</button>
+      </div>
+      <ul id="shopping"></ul>
+    </section>
+    <section>
+      <h2>To do</h2>
+      <div class="addrow">
+        <input class="add" id="addTodo" placeholder="Add a to-do" autocomplete="off"
+               enterkeyhint="done" aria-label="Add a to-do">
+        <button class="addbtn" type="button" id="addTodoBtn">Add</button>
+      </div>
+      <ul id="todo"></ul>
+    </section>
+    <section id="countdownWrap">
+      <h2>Coming up</h2>
+      <div class="ahead" id="countdown"></div>
+    </section>
+  </div>
+</div>
+
+<div class="bar" id="bar">
+  <div class="msg" id="barMsg">—</div>
+  <div class="stamp" id="stamp"></div>
+</div>
+<div class="pending" id="pending"></div>
+
+<div id="live" class="sr-only" role="status" aria-live="polite"></div>
+
+<script src="config.js"></script>
+<script src="feeds.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -9,7 +9,7 @@
  * to no longer strands anyone on an old build.
  */
 
-var CACHE = 'fd-shell-v7';
+var CACHE = 'fd-shell-v8';
 
 
 var SHELL = [

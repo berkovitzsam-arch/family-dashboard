@@ -16,6 +16,9 @@ var CACHE_KEY = 'fd.cache';
 var QUEUE_KEY = 'fd.queue';
 var WHO_KEY = 'fd.who';
 var TOKEN_KEY = 'fd.token';
+var THEME_KEY = 'fd.theme';
+var EMOJI_KEY = 'fd.emoji';
+var THEMES = ['paper', 'pastel', 'jewel'];
 
 var state = { shopping: [], todo: [], note: '', events: [], fetched: null };
 var queue = [];
@@ -55,6 +58,63 @@ function configured() {
   return !!(CONFIG.endpoint && CONFIG.token);
 }
 
+/* ---------- theme (per device, chosen from the gear menu) ---------- */
+
+// A theme is only token values on :root plus an emoji class, so it never
+// touches structure or the sync logic. Stored per device, so Sam and Zissy can
+// pick differently on their own phones without any of it syncing.
+function currentTheme() {
+  var t = localStorage.getItem(THEME_KEY);
+  return THEMES.indexOf(t) === -1 ? 'paper' : t;
+}
+function emojiOn() { return !!localStorage.getItem(EMOJI_KEY); }
+
+function applyTheme(name) {
+  if (THEMES.indexOf(name) === -1) name = 'paper';
+  document.documentElement.setAttribute('data-theme', name);
+  localStorage.setItem(THEME_KEY, name);
+  syncMenu();
+}
+function applyEmoji(on) {
+  document.documentElement.classList.toggle('emoji', !!on);
+  if (on) localStorage.setItem(EMOJI_KEY, '1');
+  else localStorage.removeItem(EMOJI_KEY);
+  syncMenu();
+}
+
+function syncMenu() {
+  var t = currentTheme();
+  Array.prototype.forEach.call(document.querySelectorAll('.menu [data-theme]'), function (b) {
+    b.setAttribute('aria-pressed', String(b.getAttribute('data-theme') === t));
+  });
+  var eb = document.getElementById('emojiToggle');
+  if (eb) eb.setAttribute('aria-pressed', String(emojiOn()));
+}
+
+function wireSettings() {
+  var gear = document.getElementById('gear');
+  var menu = document.getElementById('menu');
+  if (!gear || !menu) return;
+
+  function close() { menu.hidden = true; gear.setAttribute('aria-expanded', 'false'); }
+
+  gear.addEventListener('click', function (e) {
+    e.stopPropagation();
+    menu.hidden = !menu.hidden;
+    gear.setAttribute('aria-expanded', String(!menu.hidden));
+  });
+  document.addEventListener('click', function (e) {
+    if (!menu.hidden && !menu.contains(e.target)) close();
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+
+  Array.prototype.forEach.call(document.querySelectorAll('.menu [data-theme]'), function (b) {
+    b.addEventListener('click', function () { applyTheme(b.getAttribute('data-theme')); });
+  });
+  document.getElementById('emojiToggle')
+    .addEventListener('click', function () { applyEmoji(!emojiOn()); });
+}
+
 /**
  * A setup link carries the token (and optionally a name) exactly once. We stash
  * them on the device and strip them from the URL so the secret does not linger
@@ -70,6 +130,17 @@ function adoptSetupLink() {
 
   var w = (params.get('who') || '').trim();
   if (w) { who = w; localStorage.setItem(WHO_KEY, w); dirty = true; }
+
+  // A link can also preset the look, e.g. ?theme=pastel or ?emoji=on — handy
+  // for setting a device without opening the menu.
+  var th = (params.get('theme') || '').trim();
+  if (THEMES.indexOf(th) !== -1) { localStorage.setItem(THEME_KEY, th); dirty = true; }
+  var em = params.get('emoji');
+  if (em !== null) {
+    if (em === '1' || em === 'on') localStorage.setItem(EMOJI_KEY, '1');
+    else localStorage.removeItem(EMOJI_KEY);
+    dirty = true;
+  }
 
   var stored = localStorage.getItem(TOKEN_KEY);
   if (stored) CONFIG.token = stored;
@@ -381,8 +452,14 @@ function render() {
   // On Thursday the feed label already says "Tomorrow · Friday", which covers
   // both the events and the candle times. Any other day it says "This Shabbat",
   // which would be wrong above a list of tomorrow's appointments.
-  document.getElementById('aheadLabel').textContent =
-    (tomorrowEvents.length && view.dow !== 4) ? 'Tomorrow' : view.aheadLabel;
+  var aheadLabel = (tomorrowEvents.length && view.dow !== 4) ? 'Tomorrow' : view.aheadLabel;
+  var al = document.getElementById('aheadLabel');
+  al.textContent = '';
+  var alEm = document.createElement('span');
+  alEm.className = 'em';
+  alEm.textContent = '📅 ';
+  al.appendChild(alEm);
+  al.appendChild(document.createTextNode(aheadLabel));
 
   var ahead = document.getElementById('ahead');
   ahead.innerHTML = '';
@@ -522,6 +599,12 @@ function init() {
   queue = load(QUEUE_KEY, []);
 
   var shared = adoptSetupLink();
+
+  // Apply the saved look before first paint so there is no flash of the wrong
+  // theme; adoptSetupLink has already honoured any ?theme=/?emoji= override.
+  applyTheme(currentTheme());
+  applyEmoji(emojiOn());
+  wireSettings();
 
   hookAdd('addShopping', 'addShoppingBtn', 'shopping');
   hookAdd('addTodo', 'addTodoBtn', 'todo');

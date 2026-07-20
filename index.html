@@ -149,6 +149,65 @@
             --accent-strong: oklch(74% 0.1 60); --accent2: oklch(78% 0.1 190);
             --edge: #7d776a; }
   }
+
+  /* ---------- themes (per device, chosen in the gear menu) ---------- */
+  /* Specificity 0,2,0 beats the base :root and the dark :root (both 0,1,0), so
+     a chosen theme wins in either OS mode. Paper (default/unset) keeps its
+     automatic light/dark; pastel and jewel are single light looks for now. */
+  :root[data-theme="pastel"] {
+    --ink: #3f3147; --mute: #726578; --faint: #c6b8cb; --line: #ecdcec; --paper: #fdf6fb;
+    --accent: #d98cc0; --accent-strong: #a2317c; --accent2: #6257b8; --edge: #957e99;
+  }
+  :root[data-theme="jewel"] {
+    --ink: #241a3a; --mute: #665b80; --faint: #a99fc0; --line: #e2dcef; --paper: #faf7f0;
+    --accent: #b0348a; --accent-strong: #86206a; --accent2: #0f7250; --edge: #8a82a0;
+    --display: Georgia, "Noto Serif", "Times New Roman", serif;
+  }
+  /* jewel: checkboxes become gem facets */
+  :root[data-theme="jewel"] li::before { border-radius: 2px; transform: rotate(45deg); }
+
+  /* ---------- emoji (optional, toggled in the gear menu) ---------- */
+  .em { display: none; }
+  :root.emoji .em { display: inline; }
+
+  /* ---------- settings gear + menu ---------- */
+  .gear { position: fixed; top: 12px; right: 12px; width: 34px; height: 34px; z-index: 20;
+    display: flex; align-items: center; justify-content: center; padding: 0; border: 0;
+    background: none; color: var(--faint); cursor: pointer; border-radius: 50%; }
+  .gear:hover { color: var(--mute); background: rgba(128,128,128,0.10); }
+  .gear:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+  .gear svg { width: 4px; height: 18px; fill: currentColor; }
+  .menu { position: fixed; top: 52px; right: 12px; z-index: 21; min-width: 194px;
+    background: var(--paper); border: 1.5px solid var(--line); border-radius: 14px;
+    padding: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.14); }
+  .menu[hidden] { display: none; }
+  .menu h3 { font: 500 11px/1 var(--display); letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--faint); margin: 4px 8px 10px; }
+  .menu button { display: flex; width: 100%; align-items: center; gap: 11px; font: inherit;
+    font-size: 15px; padding: 9px 8px; border: 0; background: none; color: var(--ink);
+    cursor: pointer; border-radius: 9px; text-align: left; }
+  .menu button:hover { background: rgba(128,128,128,0.10); }
+  .menu button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
+  .menu .swatch { width: 18px; height: 18px; border-radius: 50%; flex: none; border: 1.5px solid; }
+  .menu .check { margin-left: auto; color: var(--accent-strong); }
+  .menu button[aria-pressed="false"] .check { visibility: hidden; }
+  .menu hr { border: 0; border-top: 1px solid var(--line); margin: 8px 4px; }
+
+  /* ---------- desktop: keep the frame, scroll the columns ---------- */
+  /* Long lists used to push the priority bar off the bottom. On desktop the page
+     becomes a fixed-height frame — header and bar pinned — and each column
+     scrolls its own overflow. Phone keeps natural top-to-bottom page scroll. */
+  @media (min-width: 721px) {
+    html, body { height: 100%; }
+    body { display: flex; flex-direction: column; overflow: hidden; }
+    header { flex: none; }
+    .cols { flex: 1 1 auto; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+    .cols > div { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+    .cols > div::-webkit-scrollbar { width: 7px; }
+    .cols > div::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+    .cols > div::-webkit-scrollbar-track { background: transparent; }
+    .bar, .pending { flex: none; }
+  }
 </style>
 </head>
 <body>
@@ -167,7 +226,7 @@
 <div class="cols">
   <div>
     <section>
-      <h2>Today</h2>
+      <h2><span class="em">📅 </span>Today</h2>
       <div id="today"></div>
     </section>
     <section>
@@ -178,7 +237,7 @@
 
   <div class="lists">
     <section>
-      <h2>Shopping</h2>
+      <h2><span class="em">🛒 </span>Shopping</h2>
       <div class="addrow">
         <input class="add" id="addShopping" placeholder="Add to shopping" autocomplete="off"
                enterkeyhint="done" aria-label="Add to shopping list">
@@ -187,7 +246,7 @@
       <ul id="shopping"></ul>
     </section>
     <section>
-      <h2>To do</h2>
+      <h2><span class="em">✅ </span>To do</h2>
       <div class="addrow">
         <input class="add" id="addTodo" placeholder="Add a to-do" autocomplete="off"
                enterkeyhint="done" aria-label="Add a to-do">
@@ -196,7 +255,7 @@
       <ul id="todo"></ul>
     </section>
     <section id="countdownWrap">
-      <h2>Coming up</h2>
+      <h2><span class="em">✨ </span>Coming up</h2>
       <div class="ahead" id="countdown"></div>
     </section>
   </div>
@@ -207,6 +266,22 @@
   <div class="stamp" id="stamp"></div>
 </div>
 <div class="pending" id="pending"></div>
+
+<button class="gear" id="gear" type="button" aria-label="Display settings" aria-haspopup="true">
+  <svg viewBox="0 0 4 18" aria-hidden="true"><circle cx="2" cy="2" r="2"/><circle cx="2" cy="9" r="2"/><circle cx="2" cy="16" r="2"/></svg>
+</button>
+<div class="menu" id="menu" role="menu" aria-label="Display settings" hidden>
+  <h3>Theme</h3>
+  <button type="button" role="menuitemradio" data-theme="paper" aria-pressed="true">
+    <span class="swatch" style="background:#fbfaf6; border-color:#d8632a"></span>Paper<span class="check">✓</span></button>
+  <button type="button" role="menuitemradio" data-theme="pastel" aria-pressed="false">
+    <span class="swatch" style="background:#fdf6fb; border-color:#d98cc0"></span>Pastel<span class="check">✓</span></button>
+  <button type="button" role="menuitemradio" data-theme="jewel" aria-pressed="false">
+    <span class="swatch" style="background:#faf7f0; border-color:#b0348a"></span>Jewel<span class="check">✓</span></button>
+  <hr>
+  <button type="button" role="menuitemcheckbox" id="emojiToggle" aria-pressed="false">
+    Emoji<span class="check">✓</span></button>
+</div>
 
 <div id="live" class="sr-only" role="status" aria-live="polite"></div>
 

@@ -68,7 +68,13 @@
   .ev { padding: 3px 0 3px 14px; margin-bottom: 14px; border-left: 3px solid var(--ink); }
   .ev.her { border-left-style: dashed; }
   .ev.both { border-left: 0; padding-left: 0; border-top: 2.5px solid var(--ink); padding-top: 10px; }
+  /* The label identifies it, so no rule. Keeps the full-width bar meaning
+     "this one is genuinely both of us" instead of appearing on every row. */
+  .ev.labelled { border-left: 0; border-top: 0; padding-left: 0; padding-top: 3px; }
   .ev .what { font-size: 18px; font-weight: 500; letter-spacing: -0.005em; }
+  /* Whose the event is about, when the line style cannot say it. */
+  .ev .evlabel { color: var(--accent2); }
+  .ev .evlabel::after { content: ' · '; color: var(--faint); }
   .ev .when { font-size: 13px; color: var(--mute); margin-top: 2px; }
   .ahead { font-size: 15px; color: var(--mute); line-height: 1.7; }
   .ahead b { color: var(--accent-strong); font-weight: 600; }

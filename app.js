@@ -308,11 +308,22 @@ function renderList(el, list, items) {
  */
 function eventNode(ev) {
   var d = document.createElement('div');
-  d.className = 'ev ' + (ev.who || 'him');
+  // A labelled event says whose it is in words, so it does not also need a
+  // rule. Without this the full-width "both" bar ends up on most rows and
+  // stops meaning anything.
+  d.className = 'ev ' + (ev.who || 'him') + (ev.label ? ' labelled' : '');
 
   var what = document.createElement('div');
   what.className = 'what';
-  what.textContent = ev.what;
+  // Whose an event is *about* (a kid, medical) is carried by this label rather
+  // than by more line styles, which stop being distinguishable past two.
+  if (ev.label) {
+    var lab = document.createElement('span');
+    lab.className = 'evlabel';
+    lab.textContent = ev.label;
+    what.appendChild(lab);
+  }
+  what.appendChild(document.createTextNode(ev.what));
   d.appendChild(what);
 
   var when = document.createElement('div');

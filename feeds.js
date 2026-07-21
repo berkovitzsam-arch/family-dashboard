@@ -21,6 +21,7 @@ var FEEDS = (function () {
   var LAT = 40.879335, LON = -73.910328;
   var TZ = 'America/New_York';
   var CANDLE_MINUTES = 18;           // minutes before sunset
+  var RAIN_PROB = 50;                // % chance at which an hour counts as "rain"
 
   var WEATHER_KEY = 'fd.weather';
   var JEWISH_KEY = 'fd.jewish';
@@ -48,6 +49,57 @@ var FEEDS = (function () {
     return '';
   }
 
+  // A precipitation code is one whose plain word is wet; drives the rain verb.
+  function precipWord(code) {
+    var w = condition(code);
+    return (w === 'drizzle' || w === 'rain' || w === 'showers' ||
+            w === 'snow' || w === 'snow showers' || w === 'thunderstorms') ? w : 'rain';
+  }
+
+  /** Bare hour, no minutes: 14 -> "2 pm", 0 -> "12 am". */
+  function hourLabel(h) {
+    var ampm = h >= 12 ? 'pm' : 'am';
+    var hh = h % 12; if (hh === 0) hh = 12;
+    return hh + ' ' + ampm;
+  }
+
+  /**
+   * The next stretch of rain today, as a short phrase ("rain 2-5 pm",
+   * "showers til 4 pm"), or '' if none is coming. Pure and timezone-safe:
+   * Open-Meteo hourly times are already NY-local strings, so the hour is read
+   * straight from the ISO text and compared against nowHour (also NY) - no Date
+   * parsing, which is where the earlier timezone bugs lived. `todayKey` and
+   * `nowHour` are passed in so this can be pinned in tests.
+   */
+  function rainPhrase(hourly, todayKey, nowHour) {
+    if (!hourly || !hourly.time || !hourly.precipitation_probability) return '';
+    var times = hourly.time, probs = hourly.precipitation_probability, codes = hourly.weather_code || [];
+
+    var startH = -1, lastH = -1, peakCode = 0;
+    for (var i = 0; i < times.length; i++) {
+      if (times[i].slice(0, 10) !== todayKey) continue;      // today only
+      var h = parseInt(times[i].slice(11, 13), 10);
+      if (h < nowHour) continue;                             // future (or current) hours only
+      var wet = (probs[i] || 0) >= RAIN_PROB;
+      if (wet) {
+        if (startH === -1) startH = h;
+        lastH = h;
+        if ((codes[i] || 0) > peakCode) peakCode = codes[i] || 0;
+      } else if (startH !== -1) {
+        break;                                               // first contiguous block only
+      }
+    }
+    if (startH === -1) return '';
+
+    var verb = precipWord(peakCode);
+    var endH = Math.min(lastH + 1, 23);                      // block runs through the last wet hour
+    if (startH <= nowHour) return verb + ' til ' + hourLabel(endH);
+    var a = hourLabel(startH), b = hourLabel(endH);
+    // collapse the shared am/pm: "2-5 pm" rather than "2 pm-5 pm"
+    if (a.slice(-2) === b.slice(-2)) a = a.slice(0, -3);
+    return verb + ' ' + a + '-' + b;
+  }
+
   /* ---------- time, always in TZ ---------- */
 
   /** 'YYYY-MM-DD' for the given instant, as seen in TZ. en-CA yields ISO order. */
@@ -61,6 +113,11 @@ var FEEDS = (function () {
 
   function monthDayIn(d) {
     return d.toLocaleDateString('en-US', { timeZone: TZ, month: 'long', day: 'numeric' });
+  }
+
+  /** Current hour (0-23) as seen in TZ, so rain timing never uses the device zone. */
+  function nowHourIn(d) {
+    return parseInt(d.toLocaleTimeString('en-US', { timeZone: TZ, hour: '2-digit', hour12: false }), 10);
   }
 
   /** "8:01 pm" in TZ. ICU inserts a narrow no-break space before AM/PM. */
@@ -115,15 +172,18 @@ var FEEDS = (function () {
     var u = 'https://api.open-meteo.com/v1/forecast?latitude=' + LAT + '&longitude=' + LON +
             '&current=temperature_2m,weather_code' +
             '&daily=temperature_2m_max,temperature_2m_min' +
+            '&hourly=precipitation_probability,weather_code' +
             '&temperature_unit=fahrenheit&timezone=' + encodeURIComponent(TZ) +
             '&forecast_days=1';
     return fetch(u).then(function (r) { return r.json(); }).then(function (d) {
+      var now = new Date();
       save(WEATHER_KEY, {
         at: Date.now(),
         temp: Math.round(d.current.temperature_2m),
         hi: Math.round(d.daily.temperature_2m_max[0]),
         lo: Math.round(d.daily.temperature_2m_min[0]),
-        cond: condition(d.current.weather_code)
+        cond: condition(d.current.weather_code),
+        rain: rainPhrase(d.hourly, dateKeyIn(now), nowHourIn(now))
       });
     });
   }
@@ -208,7 +268,11 @@ var FEEDS = (function () {
     // A temperature from this morning is worse than no temperature.
     if (w && age(w) < WEATHER_SHOW_AGE) {
       v.temp = w.temp + '°';
-      v.cond = w.lo + '–' + w.hi + (w.cond ? ' · ' + w.cond : '');
+      // When rain is coming, its timing is the useful thing to show, so it
+      // takes the condition slot ("64–83 · rain 2–5 pm"); otherwise the plain
+      // condition word ("64–83 · clear").
+      var tail = w.rain || w.cond;
+      v.cond = w.lo + '–' + w.hi + (tail ? ' · ' + tail : '');
     }
 
     if (j) {
@@ -249,7 +313,7 @@ var FEEDS = (function () {
     // Exposed for tests/feeds.test.js only.
     _test: { hhmm: hhmm, daysUntil: daysUntil, dateKeyIn: dateKeyIn, dowIn: dowIn,
              monthDayIn: monthDayIn, hebrewDate: hebrewDate, condition: condition,
-             isToday: isToday, TZ: TZ }
+             isToday: isToday, rainPhrase: rainPhrase, hourLabel: hourLabel, TZ: TZ }
   };
 })();
 

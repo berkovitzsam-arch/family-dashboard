@@ -23,6 +23,18 @@
                    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
                    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
   }
+  /* Almanac theme only. Deliberately NOT in the service worker's SHELL: Paper
+     users should never download it. It is cached opportunistically on first
+     use (the fetch handler caches any same-origin file), so it works offline
+     thereafter. font-display:swap means a fresh Almanac device shows Georgia
+     until it loads. Variable, so all weights come from one 66 KB file. */
+  @font-face {
+    font-family: "Fraunces";
+    font-style: normal;
+    font-weight: 400 900;
+    font-display: swap;
+    src: url("fonts/fraunces-latin.woff2") format("woff2");
+  }
 
   :root {
     --ink: #16140f;
@@ -166,6 +178,53 @@
   /* jewel: checkboxes become gem facets */
   :root[data-theme="jewel"] li::before { border-radius: 2px; transform: rotate(45deg); }
 
+  /* Almanac: a daily luach. Warm cream, Fraunces serif, editorial rules — the
+     one theme that also restyles structure, not just tokens. */
+  :root[data-theme="almanac"] {
+    --ink: #241d10; --mute: #6b5e42; --faint: #a2916f; --line: #d4c8ac; --paper: #f5eede;
+    --accent: #a5381b; --accent-strong: #8a2f14; --accent2: #395c44; --edge: #8f7b54;
+    --display: "Fraunces", Georgia, "Noto Serif", serif;
+  }
+  /* centred masthead + double rule */
+  :root[data-theme="almanac"] header { flex-direction: column; align-items: center;
+    text-align: center; gap: 4px; border-bottom-width: 3px; border-bottom-style: double; }
+  :root[data-theme="almanac"] header > div { text-align: center; }
+  :root[data-theme="almanac"] .temp { font-size: 22px; margin-top: 2px; }
+  :root[data-theme="almanac"] .cond { text-align: center; }
+  :root[data-theme="almanac"] h2 { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  :root[data-theme="almanac"] .bar { border-width: 3px; border-style: double; border-radius: 4px; }
+  :root[data-theme="almanac"] .bar .msg { font-family: var(--display); }
+
+  /* editorial event rows: time in a left column, identity kept in the rule */
+  :root[data-theme="almanac"] .ev { display: flex; gap: 16px; align-items: baseline;
+    padding: 5px 0 5px 12px; margin-bottom: 6px; border-top: 0; }
+  :root[data-theme="almanac"] .ev.both { border-left: 4px double var(--ink); border-top: 0;
+    padding-left: 11px; padding-top: 5px; }
+  /* padding-left matches ruled rows (border + pad = 15px) so the time column aligns */
+  :root[data-theme="almanac"] .ev.labelled { border-left: 0; padding-left: 15px; }
+  :root[data-theme="almanac"] .ev .when { order: -1; min-width: 66px; margin-top: 0;
+    font-family: var(--display); }
+  :root[data-theme="almanac"] .ev .what { font-family: var(--display); font-weight: 500; font-size: 19px; }
+
+  /* featured candle-lighting box: the almanac's key datum */
+  :root[data-theme="almanac"] .shablines { border: 1px solid var(--line); border-radius: 2px;
+    background: rgba(165, 56, 27, 0.05); text-align: center; padding: 16px 18px; margin-top: 10px; }
+  :root[data-theme="almanac"] .shabline.primary .sl-lab { display: block; text-transform: uppercase;
+    letter-spacing: .24em; font-size: 11px; color: var(--accent); margin-bottom: 4px; }
+  :root[data-theme="almanac"] .shabline.primary .sl-val { display: block; font-family: var(--display);
+    font-size: 38px; line-height: 1; font-weight: 600; color: var(--accent); }
+  :root[data-theme="almanac"] .shabline:not(.primary) { font-size: 14px; color: var(--mute); margin-top: 10px; }
+
+  /* ---------- week arc (all themes): the week building toward Shabbat ---------- */
+  .weekarc { display: flex; gap: 6px; margin: 14px 0 0; }
+  .weekarc i { flex: 1; height: 3px; background: var(--line); border-radius: 2px; }
+  .weekarc i.past { background: var(--faint); }
+  .weekarc i.now { background: var(--accent-strong); height: 6px; margin-top: -1.5px; }
+  .weekarc i.shab { background: var(--accent2); height: 7px; margin-top: -2px; }
+  /* width must be definite: as a flex-column child (the desktop frame) an auto
+     margin with only max-width collapses the bar to its content width. */
+  :root[data-theme="almanac"] .weekarc { width: 320px; max-width: 100%; margin: 14px auto 0; }
+
   /* ---------- emoji (optional, toggled in the gear menu) ---------- */
   .em { display: none; }
   :root.emoji .em { display: inline; }
@@ -223,6 +282,8 @@
   </div>
 </header>
 
+<div class="weekarc" id="weekarc" aria-hidden="true"></div>
+
 <div class="cols">
   <div>
     <section>
@@ -278,6 +339,8 @@
     <span class="swatch" style="background:#fdf6fb; border-color:#d98cc0"></span>Pastel<span class="check">✓</span></button>
   <button type="button" role="menuitemradio" data-theme="jewel" aria-pressed="false">
     <span class="swatch" style="background:#faf7f0; border-color:#b0348a"></span>Jewel<span class="check">✓</span></button>
+  <button type="button" role="menuitemradio" data-theme="almanac" aria-pressed="false">
+    <span class="swatch" style="background:#f5eede; border-color:#a5381b"></span>Almanac<span class="check">✓</span></button>
   <hr>
   <button type="button" role="menuitemcheckbox" id="emojiToggle" aria-pressed="false">
     Emoji<span class="check">✓</span></button>

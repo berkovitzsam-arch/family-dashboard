@@ -18,7 +18,7 @@ var WHO_KEY = 'fd.who';
 var TOKEN_KEY = 'fd.token';
 var THEME_KEY = 'fd.theme';
 var EMOJI_KEY = 'fd.emoji';
-var THEMES = ['paper', 'pastel', 'jewel'];
+var THEMES = ['paper', 'pastel', 'jewel', 'almanac'];
 
 var state = { shopping: [], todo: [], note: '', events: [], fetched: null };
 var queue = [];
@@ -425,6 +425,26 @@ function barMessage(view) {
   return view.hebrew || '';
 }
 
+/**
+ * Seven ticks, Sunday to Shabbat, showing where in the week we are. Days behind
+ * are muted, today is emphasised, and Saturday sits heavier — the week visibly
+ * builds toward Shabbat. dow is 0 (Sunday) to 6 (Saturday), computed in the NY
+ * zone by FEEDS.
+ */
+function renderArc(dow) {
+  var wk = document.getElementById('weekarc');
+  if (!wk) return;
+  wk.innerHTML = '';
+  for (var d = 0; d < 7; d++) {
+    var i = document.createElement('i');
+    if (d === 6) i.className = 'shab';
+    else if (d === dow) i.className = 'now';
+    else if (d < dow) i.className = 'past';
+    if (d === dow && d === 6) i.className = 'shab now';
+    wk.appendChild(i);
+  }
+}
+
 function render() {
   var view = FEEDS.view();
 
@@ -432,6 +452,7 @@ function render() {
   document.getElementById('sub').textContent = view.sub;
   document.getElementById('temp').textContent = view.temp;
   document.getElementById('cond').textContent = view.cond;
+  renderArc(view.dow);
 
   // Events come from the authenticated backend, not from FEEDS, so they live
   // in state alongside the lists and survive offline the same way.
@@ -467,16 +488,27 @@ function render() {
 
   // Built as nodes, not markup: everything below originates from a remote feed,
   // and textContent means it can never become HTML.
+  // Structured rows (label + value) rather than inline text + <br>, so a theme
+  // can restyle the whole block — Almanac makes it a featured candle-lighting
+  // box with the first line's time enlarged. Plain themes render it unchanged.
   var lines = view.aheadLines || [];
   if (lines.length) {
     var box = document.createElement('div');
+    box.className = 'shablines';
     if (tomorrowEvents.length) box.style.marginTop = '10px';
     lines.forEach(function (line, i) {
-      if (i) box.appendChild(document.createElement('br'));
-      box.appendChild(document.createTextNode(line.label + ' '));
-      var b = document.createElement('b');
-      b.textContent = line.value;
-      box.appendChild(b);
+      var row = document.createElement('div');
+      row.className = 'shabline' + (i === 0 ? ' primary' : '');
+      var lab = document.createElement('span');
+      lab.className = 'sl-lab';
+      lab.textContent = line.label;
+      var val = document.createElement('b');
+      val.className = 'sl-val';
+      val.textContent = line.value;
+      row.appendChild(lab);
+      row.appendChild(document.createTextNode(' '));
+      row.appendChild(val);
+      box.appendChild(row);
     });
     ahead.appendChild(box);
   }

@@ -20,7 +20,7 @@ var THEME_KEY = 'fd.theme';
 var EMOJI_KEY = 'fd.emoji';
 var THEMES = ['paper', 'pastel', 'jewel', 'almanac'];
 
-var state = { shopping: [], todo: [], note: '', events: [], fetched: null };
+var state = { shopping: [], todo: [], note: '', events: [], chores: [], fetched: null };
 var queue = [];
 var who = localStorage.getItem(WHO_KEY) || '';
 
@@ -254,6 +254,7 @@ function adopt(data) {
   state.todo = data.todo || [];
   state.note = data.note || '';
   state.events = data.events || [];
+  state.chores = data.chores || [];
   state.fetched = new Date().toISOString();
   // A change from the other device counts as activity: whoever is watching is
   // probably mid-conversation about it, so stay on the fast poll for a bit.
@@ -540,6 +541,8 @@ function render() {
   document.getElementById('pending').textContent = queue.length
     ? queue.length + ' change' + (queue.length > 1 ? 's' : '') + ' waiting to sync'
     : '';
+
+  if (!document.getElementById('choresView').hidden) renderChores();
 }
 
 /* ---------- self-update ---------- */
@@ -626,6 +629,221 @@ function hookAdd(inputId, btnId, list) {
   syncBtn();
 }
 
+/* ---------- chores view ---------- */
+
+var pendingChore = {};   // id -> timer, mirrors pendingDone for the lists
+
+function nowIso() { return new Date().toISOString(); }
+
+function choreById(id) {
+  for (var i = 0; i < state.chores.length; i++) if (state.chores[i].id === id) return state.chores[i];
+  return null;
+}
+
+function startChoreDone(id) {
+  if (pendingChore[id]) return;
+  var c = choreById(id);
+  pendingChore[id] = setTimeout(function () { commitChoreDone(id); }, UNDO_MS);
+  if (c) announce(c.title + ' marked done');
+  renderChores();
+}
+
+function cancelChoreDone(id) {
+  if (!pendingChore[id]) return;
+  clearTimeout(pendingChore[id]);
+  delete pendingChore[id];
+  renderChores();
+}
+
+function commitChoreDone(id) {
+  if (pendingChore[id]) { clearTimeout(pendingChore[id]); delete pendingChore[id]; }
+  var c = choreById(id);
+  if (!c) return;
+  c.last_done_at = nowIso();
+  c.last_done_by = who;
+  save(CACHE_KEY, state);
+  enqueue({ op: 'choreDone', id: id, at: c.last_done_at, by: who });
+}
+
+/** "Still needed" on a handled-today chore: reopen it. */
+function reopenChore(id) {
+  var c = choreById(id);
+  if (!c) return;
+  c.last_done_at = '';
+  c.last_done_by = '';
+  save(CACHE_KEY, state);
+  announce(c.title + ' reopened');
+  enqueue({ op: 'choreUndone', id: id });
+}
+
+function addChore(title, owner, cadence) {
+  title = title.trim();
+  if (!title) return;
+  var id = uuid();
+  state.chores.push({ id: id, title: title, owner: owner, cadence: cadence,
+                      cue: '', def: '', last_done_at: '', last_done_by: '' });
+  save(CACHE_KEY, state);
+  announce(title + ' added to chores');
+  enqueue({ op: 'choreAdd', id: id, title: title, owner: owner, cadence: cadence });
+}
+
+/** A due-chore row: tap to mark done, with the same inline-undo grace as lists. */
+function choreRow(c) {
+  var waiting = !!pendingChore[c.id];
+  var li = document.createElement('li');
+  if (waiting) li.className = 'going';
+
+  var span = document.createElement('span');
+  span.textContent = c.title;
+  li.appendChild(span);
+
+  if (waiting) {
+    var undo = document.createElement('button');
+    undo.type = 'button';
+    undo.className = 'undoInline';
+    undo.textContent = 'Undo';
+    undo.setAttribute('aria-label', 'Undo marking ' + c.title + ' done');
+    undo.onclick = function (e) { e.stopPropagation(); cancelChoreDone(c.id); };
+    li.appendChild(undo);
+  } else if (c.cue) {
+    var cue = document.createElement('span');
+    cue.className = 'cue';
+    cue.textContent = c.cue;
+    li.appendChild(cue);
+  }
+
+  li.tabIndex = 0;
+  li.setAttribute('role', 'button');
+  li.setAttribute('aria-label', waiting ? c.title + ' done, undo available' : 'Mark ' + c.title + ' done');
+  function activate() { if (pendingChore[c.id]) cancelChoreDone(c.id); else startChoreDone(c.id); }
+  li.onclick = activate;
+  li.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); } };
+  return li;
+}
+
+/** A handled-today row: shows who did it, with a quiet "still needed" reopen. */
+function handledRow(c) {
+  var li = document.createElement('li');
+  li.className = 'going';
+  var span = document.createElement('span');
+  span.textContent = c.title;
+  li.appendChild(span);
+  var meta = document.createElement('span');
+  meta.className = 'meta';
+  meta.textContent = c.last_done_by || 'done';
+  li.appendChild(meta);
+  var re = document.createElement('button');
+  re.type = 'button';
+  re.className = 'undoInline';
+  re.textContent = 'Still needed';
+  re.onclick = function (e) { e.stopPropagation(); reopenChore(c.id); };
+  li.appendChild(re);
+  return li;
+}
+
+function choreGroup(title, chores, rowFn, handled) {
+  var wrap = document.createElement('div');
+  wrap.className = 'chores-group' + (handled ? ' handled' : '');
+  var h = document.createElement('h2');
+  h.textContent = title;
+  wrap.appendChild(h);
+  var ul = document.createElement('ul');
+  if (!chores.length) {
+    var li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = handled ? 'Nothing yet today' : 'All clear';
+    ul.appendChild(li);
+  } else {
+    chores.forEach(function (c) { ul.appendChild(rowFn(c)); });
+  }
+  wrap.appendChild(ul);
+  return wrap;
+}
+
+function partnerName() {
+  // The other person. Two-person household; fall back gracefully if `who` unset.
+  return who === 'Sam' ? 'Zissy' : (who === 'Zissy' ? 'Sam' : 'Partner');
+}
+
+/**
+ * Only the three groups re-render on sync; the add control below them is static
+ * HTML wired once (wireChoreAdd), so a background poll never wipes what you are
+ * typing or the owner/cadence you have picked — same discipline as the lists.
+ */
+function renderChores() {
+  var groups = document.getElementById('choresGroups');
+  if (!groups) return;
+  var g = CHORES.group(state.chores, who, nowIso());
+  groups.innerHTML = '';
+  groups.appendChild(choreGroup('My chores', g.mine, choreRow, false));
+  groups.appendChild(choreGroup(partnerName() + '’s chores', g.partner, choreRow, false));
+  groups.appendChild(choreGroup('Handled today', g.handledToday, handledRow, true));
+}
+
+var choreChoice = { owner: 'Sam', cadence: 'weekly' };
+
+function wireChoreAdd() {
+  var input = document.getElementById('addChore');
+  var btn = document.getElementById('addChoreBtn');
+  var opts = document.getElementById('choreAddOpts');
+  if (!input || !btn || !opts) return;
+  choreChoice.owner = who === 'Zissy' ? 'Zissy' : 'Sam';
+
+  var segs = [];
+  function addSeg(label, group, value) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'seg';
+    b.textContent = label;
+    b.setAttribute('aria-pressed', String(choreChoice[group] === value));
+    b.onclick = function () {
+      choreChoice[group] = value;
+      segs.forEach(function (s) {
+        if (s.group === group) s.el.setAttribute('aria-pressed', String(s.value === value));
+      });
+    };
+    opts.appendChild(b);
+    segs.push({ el: b, group: group, value: value });
+  }
+  addSeg('Sam', 'owner', 'Sam');
+  addSeg('Zissy', 'owner', 'Zissy');
+  addSeg('Daily', 'cadence', 'daily');
+  addSeg('Weekly', 'cadence', 'weekly');
+
+  function submit() {
+    if (!input.value.trim()) { input.focus(); return; }
+    addChore(input.value, choreChoice.owner, choreChoice.cadence);
+    input.value = '';
+    input.focus();
+  }
+  btn.addEventListener('click', submit);
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+}
+
+/* ---------- view switch (dashboard <-> chores) ---------- */
+
+var VIEW_KEY = 'fd.view';   // navigation state (per device, not synced)
+
+function showView(name) {
+  var chores = name === 'chores';
+  document.getElementById('dashboardView').hidden = chores;
+  document.getElementById('choresView').hidden = !chores;
+  var btn = document.getElementById('choresToggle');
+  btn.textContent = chores ? '‹ Home' : 'Chores';
+  btn.setAttribute('aria-label', chores ? 'Back to dashboard' : 'Switch to chores');
+  try { sessionStorage.setItem(VIEW_KEY, name); } catch (e) {}
+  if (chores) renderChores();
+}
+
+function wireSwitch() {
+  var btn = document.getElementById('choresToggle');
+  if (!btn) return;
+  btn.addEventListener('click', function () {
+    var showing = !document.getElementById('choresView').hidden;
+    showView(showing ? 'dashboard' : 'chores');
+  });
+}
+
 function init() {
   state = load(CACHE_KEY, state);
   queue = load(QUEUE_KEY, []);
@@ -637,6 +855,9 @@ function init() {
   applyTheme(currentTheme());
   applyEmoji(emojiOn());
   wireSettings();
+  wireSwitch();
+  wireChoreAdd();
+  if (sessionStorage.getItem(VIEW_KEY) === 'chores') showView('chores');
 
   hookAdd('addShopping', 'addShoppingBtn', 'shopping');
   hookAdd('addTodo', 'addTodoBtn', 'todo');

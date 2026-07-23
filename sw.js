@@ -9,7 +9,7 @@
  * to no longer strands anyone on an old build.
  */
 
-var CACHE = 'fd-shell-v11';
+var CACHE = 'fd-shell-v12';
 
 
 var SHELL = [
@@ -17,6 +17,7 @@ var SHELL = [
   './index.html',
   './app.js',
   './feeds.js',
+  './chores.js',
   './manifest.json',
   './fonts/baloo2-latin.woff2'
 ];

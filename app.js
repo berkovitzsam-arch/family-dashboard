@@ -632,6 +632,7 @@ function hookAdd(inputId, btnId, list) {
 /* ---------- chores view ---------- */
 
 var pendingChore = {};   // id -> timer, mirrors pendingDone for the lists
+var editingChore = null; // id of the chore whose inline editor is open, or null
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -687,15 +688,66 @@ function addChore(title, owner, cadence) {
   enqueue({ op: 'choreAdd', id: id, title: title, owner: owner, cadence: cadence });
 }
 
-/** A due-chore row: tap to mark done, with the same inline-undo grace as lists. */
+/** Reassign owner / change cadence. Applies locally, then syncs the whole pair. */
+function editChore(id, changes) {
+  var c = choreById(id);
+  if (!c) return;
+  if (changes.owner != null) c.owner = changes.owner;
+  if (changes.cadence != null) c.cadence = changes.cadence;
+  save(CACHE_KEY, state);
+  enqueue({ op: 'choreEdit', id: id, owner: c.owner, cadence: c.cadence });
+}
+
+/** The owner/cadence picker shown inline when a chore's Edit is open. */
+function choreEditor(c) {
+  var box = document.createElement('div');
+  box.className = 'chore-edit';
+  function seg(label, active, fn) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'seg';
+    b.textContent = label;
+    b.setAttribute('aria-pressed', String(active));
+    b.onclick = function (e) { e.stopPropagation(); fn(); };
+    return b;
+  }
+  box.appendChild(seg('Sam', c.owner === 'Sam', function () { editChore(c.id, { owner: 'Sam' }); }));
+  box.appendChild(seg('Zissy', c.owner === 'Zissy', function () { editChore(c.id, { owner: 'Zissy' }); }));
+  box.appendChild(seg('Daily', c.cadence === 'daily', function () { editChore(c.id, { cadence: 'daily' }); }));
+  box.appendChild(seg('Weekly', c.cadence !== 'daily', function () { editChore(c.id, { cadence: 'weekly' }); }));
+  return box;
+}
+
+/**
+ * A due-chore row: tap to mark done (same inline-undo grace as the lists). The
+ * "done" standard shows as a muted subline; Edit opens an inline owner/cadence
+ * picker. While the editor is open, row taps are inert so you can't complete the
+ * chore by accident.
+ */
 function choreRow(c) {
   var waiting = !!pendingChore[c.id];
-  var li = document.createElement('li');
-  if (waiting) li.className = 'going';
+  var editing = editingChore === c.id;
 
-  var span = document.createElement('span');
-  span.textContent = c.title;
-  li.appendChild(span);
+  var li = document.createElement('li');
+  li.className = 'chore' + (waiting ? ' going' : '');
+
+  var body = document.createElement('div');
+  body.className = 'chore-body';
+
+  var title = document.createElement('span');
+  title.className = 'chore-title';
+  title.textContent = c.title;
+  body.appendChild(title);
+
+  var subText = [c.cue, c.def].filter(function (s) { return s; }).join(' · ');
+  if (subText) {
+    var sub = document.createElement('span');
+    sub.className = 'chore-sub';
+    sub.textContent = subText;
+    body.appendChild(sub);
+  }
+  if (editing) body.appendChild(choreEditor(c));
+  li.appendChild(body);
 
   if (waiting) {
     var undo = document.createElement('button');
@@ -705,17 +757,27 @@ function choreRow(c) {
     undo.setAttribute('aria-label', 'Undo marking ' + c.title + ' done');
     undo.onclick = function (e) { e.stopPropagation(); cancelChoreDone(c.id); };
     li.appendChild(undo);
-  } else if (c.cue) {
-    var cue = document.createElement('span');
-    cue.className = 'cue';
-    cue.textContent = c.cue;
-    li.appendChild(cue);
+  } else {
+    var edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'rowbtn';
+    edit.textContent = editing ? 'Done' : 'Edit';
+    edit.setAttribute('aria-label', (editing ? 'Close editor for ' : 'Edit ') + c.title);
+    edit.onclick = function (e) {
+      e.stopPropagation();
+      editingChore = editing ? null : c.id;
+      renderChores();
+    };
+    li.appendChild(edit);
   }
 
   li.tabIndex = 0;
   li.setAttribute('role', 'button');
   li.setAttribute('aria-label', waiting ? c.title + ' done, undo available' : 'Mark ' + c.title + ' done');
-  function activate() { if (pendingChore[c.id]) cancelChoreDone(c.id); else startChoreDone(c.id); }
+  function activate() {
+    if (editing) return;                         // editor open: don't complete on a stray tap
+    if (pendingChore[c.id]) cancelChoreDone(c.id); else startChoreDone(c.id);
+  }
   li.onclick = activate;
   li.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); } };
   return li;

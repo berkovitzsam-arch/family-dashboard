@@ -677,31 +677,39 @@ function reopenChore(id) {
   enqueue({ op: 'choreUndone', id: id });
 }
 
-function addChore(title, owner, cadence) {
+function addChore(title, owner, cadence, def) {
   title = title.trim();
   if (!title) return;
   var id = uuid();
+  def = def || '';
   state.chores.push({ id: id, title: title, owner: owner, cadence: cadence,
-                      cue: '', def: '', last_done_at: '', last_done_by: '' });
+                      cue: '', def: def, last_done_at: '', last_done_by: '' });
   save(CACHE_KEY, state);
   announce(title + ' added to chores');
-  enqueue({ op: 'choreAdd', id: id, title: title, owner: owner, cadence: cadence });
+  enqueue({ op: 'choreAdd', id: id, title: title, owner: owner, cadence: cadence, def: def });
 }
 
-/** Reassign owner / change cadence. Applies locally, then syncs the whole pair. */
+/** Reassign owner / change cadence / edit description. Applies locally, then syncs. */
 function editChore(id, changes) {
   var c = choreById(id);
   if (!c) return;
   if (changes.owner != null) c.owner = changes.owner;
   if (changes.cadence != null) c.cadence = changes.cadence;
+  if (changes.def != null) c.def = changes.def;
   save(CACHE_KEY, state);
-  enqueue({ op: 'choreEdit', id: id, owner: c.owner, cadence: c.cadence });
+  enqueue({ op: 'choreEdit', id: id, owner: c.owner, cadence: c.cadence, def: c.def });
 }
 
-/** The owner/cadence picker shown inline when a chore's Edit is open. */
+/** The owner / cadence / description picker shown inline when Edit is open. */
 function choreEditor(c) {
   var box = document.createElement('div');
   box.className = 'chore-edit';
+  // Keep editor keystrokes (typing a description, space on a pill) out of the
+  // row's own key handler, which would otherwise swallow spaces / mark it done.
+  box.addEventListener('keydown', function (e) { e.stopPropagation(); });
+
+  var segRow = document.createElement('div');
+  segRow.className = 'seg-row';
   function seg(label, active, fn) {
     var b = document.createElement('button');
     b.type = 'button';
@@ -711,10 +719,23 @@ function choreEditor(c) {
     b.onclick = function (e) { e.stopPropagation(); fn(); };
     return b;
   }
-  box.appendChild(seg('Sam', c.owner === 'Sam', function () { editChore(c.id, { owner: 'Sam' }); }));
-  box.appendChild(seg('Zissy', c.owner === 'Zissy', function () { editChore(c.id, { owner: 'Zissy' }); }));
-  box.appendChild(seg('Daily', c.cadence === 'daily', function () { editChore(c.id, { cadence: 'daily' }); }));
-  box.appendChild(seg('Weekly', c.cadence !== 'daily', function () { editChore(c.id, { cadence: 'weekly' }); }));
+  segRow.appendChild(seg('Sam', c.owner === 'Sam', function () { editChore(c.id, { owner: 'Sam' }); }));
+  segRow.appendChild(seg('Zissy', c.owner === 'Zissy', function () { editChore(c.id, { owner: 'Zissy' }); }));
+  segRow.appendChild(seg('Daily', c.cadence === 'daily', function () { editChore(c.id, { cadence: 'daily' }); }));
+  segRow.appendChild(seg('Weekly', c.cadence === 'weekly', function () { editChore(c.id, { cadence: 'weekly' }); }));
+  segRow.appendChild(seg('As needed', c.cadence === 'asneeded', function () { editChore(c.id, { cadence: 'asneeded' }); }));
+  box.appendChild(segRow);
+
+  var def = document.createElement('input');
+  def.className = 'add chore-def-input';
+  def.value = c.def || '';
+  def.placeholder = 'What does "done" mean? (optional)';
+  def.setAttribute('autocomplete', 'off');
+  def.setAttribute('aria-label', 'Description for ' + c.title);
+  def.onclick = function (e) { e.stopPropagation(); };
+  def.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); def.blur(); } };
+  def.onchange = function () { editChore(c.id, { def: def.value }); };   // commits on blur / Enter
+  box.appendChild(def);
   return box;
 }
 
@@ -745,6 +766,15 @@ function choreRow(c) {
     sub.className = 'chore-sub';
     sub.textContent = subText;
     body.appendChild(sub);
+  }
+  // As-needed chores are condition-based, not on a clock — show recency instead.
+  if (c.cadence === 'asneeded') {
+    var last = document.createElement('span');
+    last.className = 'chore-sub chore-last';
+    last.textContent = c.last_done_at
+      ? 'Last done ' + ago(c.last_done_at) + (c.last_done_by ? ' · ' + c.last_done_by : '')
+      : 'Not done yet';
+    body.appendChild(last);
   }
   if (editing) body.appendChild(choreEditor(c));
   li.appendChild(body);
@@ -835,10 +865,15 @@ function partnerName() {
 function renderChores() {
   var groups = document.getElementById('choresGroups');
   if (!groups) return;
+  // A background poll calls render(); don't yank a description field out from
+  // under someone mid-type by rebuilding while an input in here is focused.
+  var ae = document.activeElement;
+  if (ae && groups.contains(ae) && ae.tagName === 'INPUT') return;
   var g = CHORES.group(state.chores, who, nowIso());
   groups.innerHTML = '';
   groups.appendChild(choreGroup('My chores', g.mine, choreRow, false));
   groups.appendChild(choreGroup(partnerName() + '’s chores', g.partner, choreRow, false));
+  if (g.asNeeded.length) groups.appendChild(choreGroup('As needed', g.asNeeded, choreRow, false));
   groups.appendChild(choreGroup('Handled today', g.handledToday, handledRow, true));
 }
 
@@ -848,6 +883,7 @@ function wireChoreAdd() {
   var input = document.getElementById('addChore');
   var btn = document.getElementById('addChoreBtn');
   var opts = document.getElementById('choreAddOpts');
+  var defInput = document.getElementById('addChoreDef');
   if (!input || !btn || !opts) return;
   choreChoice.owner = who === 'Zissy' ? 'Zissy' : 'Sam';
 
@@ -871,15 +907,18 @@ function wireChoreAdd() {
   addSeg('Zissy', 'owner', 'Zissy');
   addSeg('Daily', 'cadence', 'daily');
   addSeg('Weekly', 'cadence', 'weekly');
+  addSeg('As needed', 'cadence', 'asneeded');
 
   function submit() {
     if (!input.value.trim()) { input.focus(); return; }
-    addChore(input.value, choreChoice.owner, choreChoice.cadence);
+    addChore(input.value, choreChoice.owner, choreChoice.cadence, defInput ? defInput.value : '');
     input.value = '';
+    if (defInput) defInput.value = '';
     input.focus();
   }
   btn.addEventListener('click', submit);
   input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+  if (defInput) defInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
 }
 
 /* ---------- view switch (dashboard <-> chores) ---------- */

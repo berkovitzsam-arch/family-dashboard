@@ -44,13 +44,18 @@ var CHORES = (function () {
   }
 
   /**
-   * Split the chores into the three lists the view shows. `who` is this device's
+   * Split the chores into the lists the view shows. `who` is this device's
    * person. Ownership decides mine-vs-partner; either person can still complete
    * either list (coverage), so this is display grouping only.
+   *
+   * "As needed" chores (cadence 'asneeded') are condition-based (e.g. garbage
+   * "when full"), not on a clock — they go into their own always-visible bucket
+   * and never appear as due/overdue or in handled-today.
    */
   function group(chores, who, nowIso) {
-    var out = { mine: [], partner: [], handledToday: [] };
+    var out = { mine: [], partner: [], handledToday: [], asNeeded: [] };
     (chores || []).forEach(function (c) {
+      if (c.cadence === 'asneeded') { out.asNeeded.push(c); return; }
       if (doneToday(c, nowIso)) out.handledToday.push(c);
       if (due(c, nowIso)) (c.owner === who ? out.mine : out.partner).push(c);
     });

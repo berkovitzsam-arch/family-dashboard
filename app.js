@@ -829,7 +829,7 @@ function showView(name) {
   document.getElementById('dashboardView').hidden = chores;
   document.getElementById('choresView').hidden = !chores;
   var btn = document.getElementById('choresToggle');
-  btn.textContent = chores ? '‹ Home' : 'Chores';
+  btn.classList.toggle('on', chores);   // swaps the broom icon for a back chevron
   btn.setAttribute('aria-label', chores ? 'Back to dashboard' : 'Switch to chores');
   try { sessionStorage.setItem(VIEW_KEY, name); } catch (e) {}
   if (chores) renderChores();

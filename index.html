@@ -63,7 +63,9 @@
   }
 
   header { display: flex; justify-content: space-between; align-items: flex-end;
-           gap: 16px; border-bottom: 3px solid var(--ink); border-radius: 2px; padding-bottom: 16px; }
+           gap: 16px; border-bottom: 3px solid var(--ink); border-radius: 2px; padding-bottom: 16px;
+           /* clear the fixed top-left switch icon so the day is never covered */
+           padding-left: 44px; }
   .day { font: 600 46px var(--display); line-height: 1; letter-spacing: -0.01em; color: var(--ink); }
   .sub { font-size: 14px; color: var(--mute); margin-top: 8px; letter-spacing: 0.01em; }
   .temp { font: 600 46px var(--display); line-height: 1; text-align: right; letter-spacing: -0.01em; color: var(--ink); }
@@ -187,7 +189,9 @@
   }
   /* centred masthead + double rule */
   :root[data-theme="almanac"] header { flex-direction: column; align-items: center;
-    text-align: center; gap: 4px; border-bottom-width: 3px; border-bottom-style: double; }
+    text-align: center; gap: 4px; border-bottom-width: 3px; border-bottom-style: double;
+    /* centered masthead clears the corner icon on its own; no left inset needed */
+    padding-left: 0; }
   :root[data-theme="almanac"] header > div { text-align: center; }
   :root[data-theme="almanac"] .temp { font-size: 22px; margin-top: 2px; text-align: center; }
   :root[data-theme="almanac"] .cond { text-align: center; }
@@ -273,13 +277,16 @@
     #choresView:not([hidden]) { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
   }
 
-  /* top-left view switch, mirroring the top-right gear */
-  .switch { position: fixed; top: 12px; left: 12px; z-index: 20;
-    font: 600 13px var(--display); color: var(--accent-strong);
-    background: var(--paper); border: 1.5px solid var(--line); border-radius: 999px;
-    padding: 7px 14px; cursor: pointer; }
-  .switch:hover { border-color: var(--edge); }
+  /* top-left view switch (broom icon), mirroring the top-right gear */
+  .switch { position: fixed; top: 12px; left: 12px; width: 34px; height: 34px; z-index: 20;
+    display: flex; align-items: center; justify-content: center; padding: 0; border: 0;
+    background: none; color: var(--faint); cursor: pointer; border-radius: 50%; }
+  .switch:hover { color: var(--mute); background: rgba(128,128,128,0.10); }
   .switch:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+  .switch svg { width: 21px; height: 21px; }
+  .switch .ic-back { display: none; }
+  .switch.on .ic-broom { display: none; }
+  .switch.on .ic-back { display: block; }
   .chores-head { justify-content: flex-start; }
   #choresGroups { padding-top: 24px; }
   .chores-group { margin-top: 28px; }
@@ -369,7 +376,16 @@
   </section>
 </div>
 
-<button class="switch" id="choresToggle" type="button" aria-label="Switch to chores">Chores</button>
+<button class="switch" id="choresToggle" type="button" aria-label="Switch to chores">
+  <svg class="ic-broom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M20 4 12 12"/>
+    <path d="M12 12 15.5 15.5 10 21 6.5 17.5Z"/>
+    <path d="M7.5 18.5 5.5 21 M10 20 8.5 22.5 M12.8 18.2 12 21"/>
+  </svg>
+  <svg class="ic-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M14 6l-6 6 6 6"/>
+  </svg>
+</button>
 
 <button class="gear" id="gear" type="button" aria-label="Display settings" aria-haspopup="true">
   <svg viewBox="0 0 4 18" aria-hidden="true"><circle cx="2" cy="2" r="2"/><circle cx="2" cy="9" r="2"/><circle cx="2" cy="16" r="2"/></svg>

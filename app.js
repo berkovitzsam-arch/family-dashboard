@@ -18,6 +18,7 @@ var WHO_KEY = 'fd.who';
 var TOKEN_KEY = 'fd.token';
 var THEME_KEY = 'fd.theme';
 var EMOJI_KEY = 'fd.emoji';
+var AWAKE_KEY = 'fd.awake';
 var THEMES = ['paper', 'pastel', 'jewel', 'almanac'];
 
 var state = { shopping: [], todo: [], note: '', events: [], chores: [], fetched: null };
@@ -68,6 +69,7 @@ function currentTheme() {
   return THEMES.indexOf(t) === -1 ? 'paper' : t;
 }
 function emojiOn() { return !!localStorage.getItem(EMOJI_KEY); }
+function awakeOn() { return !!localStorage.getItem(AWAKE_KEY); }
 
 function applyTheme(name) {
   if (THEMES.indexOf(name) === -1) name = 'paper';
@@ -82,6 +84,56 @@ function applyEmoji(on) {
   syncMenu();
 }
 
+/* ---------- display wake lock (per device, chosen from the gear menu) ---------- */
+
+// The preference and the platform lock are deliberately separate. Android can
+// release a lock when the app is hidden, power saver is enabled, or the battery
+// is low. The saved preference stays on, and requestWakeLock() reacquires the
+// platform lock when this page becomes visible again.
+var wakeLock = null;
+
+function wakeLockSupported() {
+  return !!(navigator.wakeLock && navigator.wakeLock.request);
+}
+
+function requestWakeLock() {
+  if (!awakeOn() || document.hidden || !wakeLockSupported()) return Promise.resolve(false);
+  if (wakeLock && !wakeLock.released) return Promise.resolve(true);
+
+  return navigator.wakeLock.request('screen').then(function (lock) {
+    wakeLock = lock;
+    lock.addEventListener('release', function () {
+      if (wakeLock === lock) wakeLock = null;
+    });
+    return true;
+  }).catch(function () {
+    wakeLock = null;
+    return false;
+  });
+}
+
+function releaseWakeLock() {
+  if (!wakeLock) return Promise.resolve();
+  var lock = wakeLock;
+  wakeLock = null;
+  return lock.release().catch(function () {});
+}
+
+function applyAwake(on) {
+  if (on) localStorage.setItem(AWAKE_KEY, '1');
+  else localStorage.removeItem(AWAKE_KEY);
+  syncMenu();
+
+  if (on) {
+    requestWakeLock().then(function (held) {
+      announce(held ? 'Display will stay awake' : 'Could not keep the display awake');
+    });
+  } else {
+    releaseWakeLock();
+    announce('Display can dim normally');
+  }
+}
+
 function syncMenu() {
   var t = currentTheme();
   Array.prototype.forEach.call(document.querySelectorAll('.menu [data-theme]'), function (b) {
@@ -89,6 +141,12 @@ function syncMenu() {
   });
   var eb = document.getElementById('emojiToggle');
   if (eb) eb.setAttribute('aria-pressed', String(emojiOn()));
+  var ab = document.getElementById('awakeToggle');
+  if (ab) {
+    ab.setAttribute('aria-pressed', String(awakeOn()));
+    ab.disabled = !wakeLockSupported();
+    ab.title = wakeLockSupported() ? '' : 'Not supported by this browser';
+  }
 }
 
 function wireSettings() {
@@ -113,6 +171,8 @@ function wireSettings() {
   });
   document.getElementById('emojiToggle')
     .addEventListener('click', function () { applyEmoji(!emojiOn()); });
+  document.getElementById('awakeToggle')
+    .addEventListener('click', function () { applyAwake(!awakeOn()); });
 }
 
 /**
@@ -956,6 +1016,7 @@ function init() {
   applyTheme(currentTheme());
   applyEmoji(emojiOn());
   wireSettings();
+  requestWakeLock();
   wireSwitch();
   wireChoreAdd();
   if (sessionStorage.getItem(VIEW_KEY) === 'chores') showView('chores');
@@ -982,12 +1043,17 @@ function init() {
   // Coming back to the page should feel instant, not "wait for the next tick".
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) { commitAllPending(); return; }
+    requestWakeLock();
     noteActivity();
     flush();
     maybeReload();
     pollLoop();
   });
-  window.addEventListener('focus', function () { noteActivity(); pollLoop(); });
+  window.addEventListener('focus', function () {
+    requestWakeLock();
+    noteActivity();
+    pollLoop();
+  });
 
   // Typing or scrolling means someone is looking: poll fast again.
   ['pointerdown', 'keydown'].forEach(function (evt) {

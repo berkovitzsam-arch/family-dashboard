@@ -250,6 +250,8 @@
     font-size: 15px; padding: 9px 8px; border: 0; background: none; color: var(--ink);
     cursor: pointer; border-radius: 9px; text-align: left; }
   .menu button:hover { background: rgba(128,128,128,0.10); }
+  .menu button:disabled { color: var(--faint); cursor: not-allowed; opacity: 0.7; }
+  .menu button:disabled:hover { background: none; }
   .menu button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
   .menu .swatch { width: 18px; height: 18px; border-radius: 50%; flex: none; border: 1.5px solid; }
   .menu .check { margin-left: auto; color: var(--accent-strong); }
@@ -419,6 +421,8 @@
   <hr>
   <button type="button" role="menuitemcheckbox" id="emojiToggle" aria-pressed="false">
     Emoji<span class="check">✓</span></button>
+  <button type="button" role="menuitemcheckbox" id="awakeToggle" aria-pressed="false">
+    Keep display awake<span class="check">✓</span></button>
 </div>
 
 <div id="live" class="sr-only" role="status" aria-live="polite"></div>

@@ -304,8 +304,13 @@
   .switch.on { left: 12px; }
   .switch .ic-board { display: block; }
   .switch.on .ic-board { display: none; }
-  body.has-board header { padding-left: 84px; }
-  :root[data-theme="almanac"] body.has-board header { padding-left: 0; }
+  /* Scoped to #dashboardView's own header, not any header under body.has-board —
+     the chores view's header only ever shows the back chevron at the 12px slot
+     and must not inherit this inset once has-board is set. The almanac override
+     below repeats the #dashboardView scope so its specificity (1,3,2) still
+     beats this rule's (1,1,2); dropping the ID from either side would flip it. */
+  body.has-board #dashboardView header { padding-left: 84px; }
+  :root[data-theme="almanac"] body.has-board #dashboardView header { padding-left: 0; }
 
   .board-head { display: flex; justify-content: space-between; align-items: baseline;
                 gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -441,7 +446,7 @@
 
 <div id="boardView" hidden>
   <div class="board-head">
-    <h1>Board</h1>
+    <h1 class="day">Board</h1>
     <div class="seg-row" id="boardFilter"></div>
   </div>
   <div class="board-agenda" id="boardAgenda"></div>
@@ -449,7 +454,7 @@
   <section>
     <div class="addrow">
       <input class="add" id="addCard" placeholder="Add a card" autocomplete="off"
-             enterkeyhint="done">
+             enterkeyhint="done" aria-label="Add a card">
       <button class="addbtn" type="button" id="addCardBtn">Add</button>
     </div>
     <div class="seg-row" id="addCardOpts"></div>

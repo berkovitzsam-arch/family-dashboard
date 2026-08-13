@@ -61,6 +61,9 @@ var BOARD = (function () {
     return dayNum(key) - dayNum(dateKeyIn(nowIso));
   }
 
+  /** Feeds may hand us a full ISO timestamp; only the calendar date matters here. */
+  function dueKey(due) { return String(due || '').slice(0, 10); }
+
   /** The lists a card can be in, each sorted by position. */
   function group(cards) {
     var out = {};
@@ -78,7 +81,7 @@ var BOARD = (function () {
   /** How urgent a card's due date is. Styling only — nothing acts on this. */
   function dueState(card, nowIso) {
     if (!card || !card.due) return 'none';
-    var d = daysUntil(card.due, nowIso);
+    var d = daysUntil(dueKey(card.due), nowIso);
     if (d < 0) return 'overdue';
     if (d === 0) return 'today';
     if (d <= 3) return 'soon';
@@ -105,17 +108,19 @@ var BOARD = (function () {
    */
   function placeByDue(due, nowIso) {
     if (!due) return 'later';
-    due = String(due).slice(0, 10);  // tolerate a full ISO timestamp, not just a date
-    var d = daysUntil(due, nowIso);
+    var d = daysUntil(dueKey(due), nowIso);
     if (d <= 3) return 'now';
     if (d <= 14) return 'week';
     return 'later';
   }
 
   return {
-    LISTS: LISTS.slice(),         // a copy — the view iterates these to draw its
-                                   // columns, but must not be able to mutate the
-                                   // array group() closes over internally
+    LISTS: Object.freeze(LISTS.slice()),  // a frozen copy — the view iterates
+                                   // these to draw its columns; frozen so a
+                                   // caller can neither mutate the array
+                                   // group() closes over internally nor grow
+                                   // this one out from under a future
+                                   // groups[name] lookup
     posBetween: posBetween,
     needsRenormalize: needsRenormalize,
     renormalize: renormalize,
@@ -124,7 +129,8 @@ var BOARD = (function () {
     ageLevel: ageLevel,
     placeByDue: placeByDue,
     _test: { TZ: TZ, STEP: STEP, MIN_GAP: MIN_GAP,
-             dateKeyIn: dateKeyIn, dayNum: dayNum, daysUntil: daysUntil }
+             dateKeyIn: dateKeyIn, dayNum: dayNum, daysUntil: daysUntil,
+             dueKey: dueKey }
   };
 })();
 

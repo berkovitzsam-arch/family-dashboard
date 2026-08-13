@@ -94,7 +94,7 @@ var BOARD = (function () {
     var stamp = (card && (card.updated_at || card.created_at)) || '';
     if (!stamp) return 0;
     var days = -daysUntil(dateKeyIn(stamp), nowIso);
-    if (days <= AGE_START) return 0;
+    if (!(days > AGE_START)) return 0;  // also catches NaN from a malformed stamp
     if (days >= AGE_FULL) return 1;
     return (days - AGE_START) / (AGE_FULL - AGE_START);
   }
@@ -105,6 +105,7 @@ var BOARD = (function () {
    */
   function placeByDue(due, nowIso) {
     if (!due) return 'later';
+    due = String(due).slice(0, 10);  // tolerate a full ISO timestamp, not just a date
     var d = daysUntil(due, nowIso);
     if (d <= 3) return 'now';
     if (d <= 14) return 'week';
@@ -112,7 +113,9 @@ var BOARD = (function () {
   }
 
   return {
-    LISTS: LISTS,                 // the view iterates these to draw its columns
+    LISTS: LISTS.slice(),         // a copy — the view iterates these to draw its
+                                   // columns, but must not be able to mutate the
+                                   // array group() closes over internally
     posBetween: posBetween,
     needsRenormalize: needsRenormalize,
     renormalize: renormalize,

@@ -277,6 +277,11 @@
        actually hides the view (an unguarded display would override it). */
     #dashboardView:not([hidden]) { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
     #choresView:not([hidden]) { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+    /* Same treatment, same reason: body sets overflow:hidden here, which
+       propagates to the viewport, so a view that does not scroll its own
+       overflow simply loses whatever falls below the fold. A tall board is the
+       normal case on a laptop, and Task 9 puts drop targets down there. */
+    #boardView:not([hidden]) { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
   }
 
   /* top-left view switch (broom icon), mirroring the top-right gear */

@@ -51,6 +51,20 @@ function setBoardAllowed(on) {
   boardAllowed = !!on;
   if (boardAllowed) { localStorage.setItem(BOARD_OK_KEY, '1'); return; }
   localStorage.removeItem(BOARD_OK_KEY);
+  // De-listed while still holding a valid token: drop the local copy of the
+  // private rows as well. Nothing is lost that the server would not hand back
+  // if access returned.
+  //
+  // Note the limit, which is inherent to offline-first storage and not fixable
+  // here: a *fully* revoked token never reaches this path at all, because
+  // checkToken_ throws, doPost answers {ok: false} with no data, and adopt()
+  // never runs. A lost phone keeps whatever it had cached.
+  state.board = [];
+  save(CACHE_KEY, state);
+  // The titles are also sitting in the view's DOM, which nothing repaints once
+  // it is hidden — clearing state alone would leave them on the device.
+  var wrap = document.getElementById('boardColumns');
+  if (wrap) wrap.innerHTML = '';
   // Access revoked mid-session: don't strand the device on a view the server
   // will no longer feed. syncSwitches() takes the icon away on the next render
   // either way, but the open view has to be closed explicitly.
@@ -1207,11 +1221,15 @@ function wireSwitch() {
 
 function init() {
   state = load(CACHE_KEY, state);
-  // load() replaces state wholesale, and a cache written by an older build has
-  // no board key at all. BOARD.group tolerates undefined, but the card writes
-  // that follow do not — this is what stops state.board.push from throwing on a
-  // device that has been running the app since before the board existed.
-  if (!Array.isArray(state.board)) state.board = [];
+  // load() replaces state wholesale, so a cache written by an older build is
+  // missing every key added since it was last written — `board` in this build,
+  // `chores` for anything dormant since before 2026-07-23. The group() helpers
+  // tolerate undefined, but state.board.push / state.chores.push do not, so a
+  // device that had sat unopened would throw on the first thing it added.
+  // Repair every list before anything reads one.
+  ['shopping', 'todo', 'events', 'chores', 'board'].forEach(function (k) {
+    if (!Array.isArray(state[k])) state[k] = [];
+  });
   queue = load(QUEUE_KEY, []);
 
   var shared = adoptSetupLink();

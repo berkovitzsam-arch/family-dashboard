@@ -15,6 +15,13 @@ var BOARD = (function () {
   // into float noise.
   var STEP = 1000;
   var MIN_GAP = 2;
+  var TZ = 'America/New_York';
+  var LISTS = ['now', 'week', 'later', 'someday', 'done'];
+
+  // Aging is deliberately slow: a card should recede only once it has genuinely
+  // been left alone, and never fade so far it becomes unreadable.
+  var AGE_START = 14;
+  var AGE_FULL = 60;
 
   /** Position for a card dropped between two neighbours. Either may be null. */
   function posBetween(before, after) {
@@ -39,11 +46,82 @@ var BOARD = (function () {
     return out;
   }
 
+  /** 'YYYY-MM-DD' for an ISO instant, as seen in TZ. en-CA yields ISO order. */
+  function dateKeyIn(iso) {
+    return new Date(iso).toLocaleDateString('en-CA', { timeZone: TZ });
+  }
+
+  /** A 'YYYY-MM-DD' key as an exact integer day count, read as midnight UTC. */
+  function dayNum(key) {
+    return Math.round(Date.parse(key + 'T00:00:00Z') / 86400000);
+  }
+
+  /** Whole days from today (in TZ) to a 'YYYY-MM-DD' date. Negative = past. */
+  function daysUntil(key, nowIso) {
+    return dayNum(key) - dayNum(dateKeyIn(nowIso));
+  }
+
+  /** The lists a card can be in, each sorted by position. */
+  function group(cards) {
+    var out = {};
+    LISTS.forEach(function (l) { out[l] = []; });
+    (cards || []).forEach(function (c) {
+      var l = LISTS.indexOf(c.list) === -1 ? 'later' : c.list;
+      out[l].push(c);
+    });
+    LISTS.forEach(function (l) {
+      out[l].sort(function (a, b) { return (a.pos || 0) - (b.pos || 0); });
+    });
+    return out;
+  }
+
+  /** How urgent a card's due date is. Styling only — nothing acts on this. */
+  function dueState(card, nowIso) {
+    if (!card || !card.due) return 'none';
+    var d = daysUntil(card.due, nowIso);
+    if (d < 0) return 'overdue';
+    if (d === 0) return 'today';
+    if (d <= 3) return 'soon';
+    return 'none';
+  }
+
+  /**
+   * 0 while a card is fresh, ramping to 1 once it has sat untouched for
+   * AGE_FULL days. The view maps this onto opacity, so an ignored card visibly
+   * recedes — the one Trello idea aimed at cards rotting unlooked-at.
+   */
+  function ageLevel(card, nowIso) {
+    var stamp = (card && (card.updated_at || card.created_at)) || '';
+    if (!stamp) return 0;
+    var days = -daysUntil(dateKeyIn(stamp), nowIso);
+    if (days <= AGE_START) return 0;
+    if (days >= AGE_FULL) return 1;
+    return (days - AGE_START) / (AGE_FULL - AGE_START);
+  }
+
+  /**
+   * Which horizon an item arriving from a feed (voice capture, vault sweep)
+   * belongs in. Undated work goes to 'later' rather than jumping the queue.
+   */
+  function placeByDue(due, nowIso) {
+    if (!due) return 'later';
+    var d = daysUntil(due, nowIso);
+    if (d <= 3) return 'now';
+    if (d <= 14) return 'week';
+    return 'later';
+  }
+
   return {
+    LISTS: LISTS,                 // the view iterates these to draw its columns
     posBetween: posBetween,
     needsRenormalize: needsRenormalize,
     renormalize: renormalize,
-    _test: { STEP: STEP, MIN_GAP: MIN_GAP }
+    group: group,
+    dueState: dueState,
+    ageLevel: ageLevel,
+    placeByDue: placeByDue,
+    _test: { TZ: TZ, STEP: STEP, MIN_GAP: MIN_GAP,
+             dateKeyIn: dateKeyIn, dayNum: dayNum, daysUntil: daysUntil }
   };
 })();
 

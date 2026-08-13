@@ -289,6 +289,51 @@
   .switch .ic-back { display: none; }
   .switch.on .ic-broom { display: none; }
   .switch.on .ic-back { display: block; }
+
+  /* Second corner icon. Only drawn on board-enabled devices, so the kitchen
+     tablet and Zissy's phones still show exactly one. When either sub-view is
+     open the surviving button becomes the back chevron and takes the 12px slot. */
+  /* The base .switch rule above sets display:flex unconditionally; an author
+     rule beats the UA [hidden]{display:none} rule regardless of specificity
+     (same trap as #dashboardView/#choresView, guarded there with :not([hidden])
+     — see comment near the desktop-frame media query). #boardToggle carries
+     `hidden` until a board-enabled device is confirmed, so it needs its own
+     higher-specificity override or it renders anyway. */
+  .switch[hidden] { display: none; }
+  .board-switch { left: 54px; }
+  .switch.on { left: 12px; }
+  .switch .ic-board { display: block; }
+  .switch.on .ic-board { display: none; }
+  body.has-board header { padding-left: 84px; }
+  :root[data-theme="almanac"] body.has-board header { padding-left: 0; }
+
+  .board-head { display: flex; justify-content: space-between; align-items: baseline;
+                gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .board-agenda { color: var(--mute); font-size: 14px; margin-bottom: 14px; }
+
+  /* One grid for both layouts: five columns on a laptop, a single stacked
+     column on a phone. Same DOM either way — only dragging is size-dependent. */
+  .board-cols { display: grid; gap: 14px; grid-template-columns: 1fr; }
+  .board-col h2 { font: 600 13px var(--display); color: var(--mute);
+                  text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 8px; }
+  .board-col.drop-target { outline: 2px dashed var(--accent-strong); outline-offset: 4px; }
+
+  .card { border: 1px solid var(--rule); border-radius: 8px; padding: 9px 11px;
+          margin-bottom: 8px; cursor: pointer; background: none; }
+  .card:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+  .card.dragging { opacity: 0.4; }
+  .card-title { font-size: 15px; }
+  .card-sub { font-size: 12px; color: var(--mute); margin-top: 3px; }
+  .card-badge { margin-right: 5px; }
+  .due-overdue { color: var(--accent-strong); font-weight: 600; }
+  .due-today { font-weight: 600; }
+  .due-soon { color: var(--mute); }
+  .card-empty { color: var(--mute); font-style: italic; font-size: 14px; }
+
+  @media (min-width: 900px) {
+    .board-cols { grid-template-columns: repeat(5, 1fr); align-items: start; }
+  }
+
   .chores-head { justify-content: flex-start; }
   #choresGroups { padding-top: 24px; }
   .chores-group { margin-top: 28px; }
@@ -394,6 +439,23 @@
   </section>
 </div>
 
+<div id="boardView" hidden>
+  <div class="board-head">
+    <h1>Board</h1>
+    <div class="seg-row" id="boardFilter"></div>
+  </div>
+  <div class="board-agenda" id="boardAgenda"></div>
+  <div class="board-cols" id="boardColumns"></div>
+  <section>
+    <div class="addrow">
+      <input class="add" id="addCard" placeholder="Add a card" autocomplete="off"
+             enterkeyhint="done">
+      <button class="addbtn" type="button" id="addCardBtn">Add</button>
+    </div>
+    <div class="seg-row" id="addCardOpts"></div>
+  </section>
+</div>
+
 <button class="switch" id="choresToggle" type="button" aria-label="Switch to chores">
   <svg class="ic-broom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     <path d="M20 4 12 12"/>
@@ -402,6 +464,16 @@
   </svg>
   <svg class="ic-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     <path d="M14 6l-6 6 6 6"/>
+  </svg>
+</button>
+
+<button class="switch board-switch" id="boardToggle" type="button" aria-label="Switch to board" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <rect class="ic-board" x="3.5" y="4" width="4.5" height="16" rx="1"/>
+    <rect class="ic-board" x="9.75" y="4" width="4.5" height="11" rx="1"/>
+    <rect class="ic-board" x="16" y="4" width="4.5" height="7" rx="1"/>
+    <path class="ic-back" d="M15 5l-7 7 7 7"/>
   </svg>
 </button>
 
@@ -430,6 +502,7 @@
 <script src="config.js"></script>
 <script src="feeds.js"></script>
 <script src="chores.js"></script>
+<script src="board.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

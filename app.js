@@ -47,28 +47,65 @@ var BOARD_LIST_NAMES = { now: 'Now', week: 'This week', later: 'Later',
                          someday: 'Someday', done: 'Done' };
 var BOARD_SOURCE_BADGE = { capture: '🎙', vault: '📓' };
 
-function setBoardAllowed(on) {
-  boardAllowed = !!on;
-  if (boardAllowed) { localStorage.setItem(BOARD_OK_KEY, '1'); return; }
+/**
+ * Everything a device has to forget once it is off the allowlist: the flag, the
+ * cached rows, the rendered titles, and the view itself. Nothing here is lost
+ * that the server would not hand back if access returned.
+ */
+function tearDownBoard() {
+  boardAllowed = false;
   localStorage.removeItem(BOARD_OK_KEY);
-  // De-listed while still holding a valid token: drop the local copy of the
-  // private rows as well. Nothing is lost that the server would not hand back
-  // if access returned.
-  //
-  // Note the limit, which is inherent to offline-first storage and not fixable
-  // here: a *fully* revoked token never reaches this path at all, because
-  // checkToken_ throws, doPost answers {ok: false} with no data, and adopt()
-  // never runs. A lost phone keeps whatever it had cached.
   state.board = [];
   save(CACHE_KEY, state);
   // The titles are also sitting in the view's DOM, which nothing repaints once
   // it is hidden — clearing state alone would leave them on the device.
   var wrap = document.getElementById('boardColumns');
   if (wrap) wrap.innerHTML = '';
-  // Access revoked mid-session: don't strand the device on a view the server
-  // will no longer feed. syncSwitches() takes the icon away on the next render
-  // either way, but the open view has to be closed explicitly.
+  // Don't strand the device on a view the server will no longer feed.
+  // syncSwitches() takes the icon away on the next render either way, but the
+  // open view has to be closed explicitly.
   if (boardVisible()) showView('dashboard');
+}
+
+function setBoardAllowed(on) {
+  if (on) { boardAllowed = true; localStorage.setItem(BOARD_OK_KEY, '1'); return; }
+  // Every device that is not on the allowlist takes this branch on every poll
+  // for as long as it is switched on — the kitchen tablet, forever, every
+  // 8-60s. Bail before touching localStorage unless there is something left to
+  // forget. The condition is "is anything still here", not "was it true a
+  // moment ago", so the first false on a device that never stored the flag
+  // still wipes rows that are somehow cached.
+  if (!boardAllowed && !localStorage.getItem(BOARD_OK_KEY) &&
+      !state.board.length && !boardVisible()) return;
+  tearDownBoard();
+}
+
+/**
+ * A revoked token is the one failure that carries meaning: the server has
+ * stopped trusting this device. Three in a row — never one, so a redeploy, a
+ * quota blip, or a single odd response cannot wipe anything — and the private
+ * rows come off the device.
+ *
+ * Be clear about what this buys: it wipes a lost or stolen phone that is ONLINE
+ * and still running the app. A device that stays offline keeps its rows, a
+ * device that is never opened again keeps its rows, and this is in no sense a
+ * remote wipe. It shortens the window; it does not close it. The count is
+ * per-session and resets on reload, which is fine — the app polls every 8-60s,
+ * so three strikes land within a couple of minutes of the app being open.
+ */
+var BOARD_TOKEN_STRIKES = 3;
+var tokenStrikes = 0;
+
+function noteResponse(res) {
+  if (res && res.ok) { tokenStrikes = 0; return; }
+  // Only an outright token rejection counts. Anything else the server can say,
+  // and anything that never reached it at all (those land in .catch and never
+  // get here, so they neither add a strike nor clear one), must leave the
+  // device's data alone.
+  if (!res || !/bad token/i.test(String(res.error || ''))) return;
+  if (++tokenStrikes < BOARD_TOKEN_STRIKES) return;
+  tokenStrikes = 0;
+  tearDownBoard();
 }
 
 function load(key, fallback) {
@@ -340,6 +377,7 @@ function flush() {
 
   post({ ops: sending })
     .then(function (res) {
+      noteResponse(res);
       if (!res.ok) throw new Error(res.error);
       queue = queue.slice(sending.length);
       save(QUEUE_KEY, queue);
@@ -387,7 +425,7 @@ function refresh() {
   post({ action: 'data' })
     // Skip while writes are queued: the server has not seen them yet, so
     // adopting its state here would visibly undo what was just typed.
-    .then(function (res) { if (res.ok && !queue.length) adopt(res.data); })
+    .then(function (res) { noteResponse(res); if (res.ok && !queue.length) adopt(res.data); })
     .catch(function () {})
     .then(function () { refreshing = false; });
 }
@@ -402,7 +440,7 @@ function refreshBoard() {
   if (refreshingBoard || !navigator.onLine || !configured()) return;
   refreshingBoard = true;
   post({ action: 'data', wantBoard: true })
-    .then(function (res) { if (res.ok && !queue.length) adopt(res.data); })
+    .then(function (res) { noteResponse(res); if (res.ok && !queue.length) adopt(res.data); })
     .catch(function () {})
     .then(function () { refreshingBoard = false; });
 }
@@ -410,6 +448,17 @@ function refreshBoard() {
 function boardVisible() {
   var el = document.getElementById('boardView');
   return !!el && !el.hidden;
+}
+
+/**
+ * One request, aimed at whatever is on screen. The board response carries the
+ * whole dashboard payload as well, so asking for both would only spend a second
+ * call on data we already have — and the Apps Script quota is shared by the
+ * whole family. Every trigger (first load, reconnect, poll tick) comes through
+ * here so none of them can drift apart.
+ */
+function refreshVisible() {
+  if (boardVisible()) refreshBoard(); else refresh();
 }
 
 /* ---------- polling ---------- */
@@ -443,7 +492,7 @@ function pollLoop() {
   if (!document.hidden) {
     // The visible view decides what gets fetched: the private rows are only
     // ever requested while someone is actually looking at the board.
-    if (boardVisible()) refreshBoard(); else refresh();
+    refreshVisible();
     FEEDS.refreshIfStale(render);            // feeds own their own, much slower cadence
   }
   render();                                  // keeps the "2m ago" stamp honest
@@ -503,6 +552,17 @@ function renderList(el, list, items) {
     };
     el.appendChild(li);
   });
+}
+
+/**
+ * The events for one day bucket. The backend emits exactly 'today' or
+ * 'tomorrow' today, so matching the day by name is equivalent to "everything
+ * that isn't tomorrow" right now — but only the positive test stays correct if
+ * a third bucket is ever added, and having one definition means the dashboard
+ * and the board's agenda line cannot drift apart.
+ */
+function eventsOn(day) {
+  return (state.events || []).filter(function (ev) { return ev.day === day; });
 }
 
 /**
@@ -593,9 +653,8 @@ function render() {
 
   // Events come from the authenticated backend, not from FEEDS, so they live
   // in state alongside the lists and survive offline the same way.
-  var events = state.events || [];
-  var todayEvents = events.filter(function (e) { return e.day !== 'tomorrow'; });
-  var tomorrowEvents = events.filter(function (e) { return e.day === 'tomorrow'; });
+  var todayEvents = eventsOn('today');
+  var tomorrowEvents = eventsOn('tomorrow');
 
   var today = document.getElementById('today');
   today.innerHTML = '';
@@ -1068,9 +1127,22 @@ function wireChoreAdd() {
 function renderBoard() {
   var wrap = document.getElementById('boardColumns');
   if (!wrap) return;
+  // Outside the guard below: the agenda is a one-line readout of data that is
+  // already here, and freezing it because a card input has focus would leave a
+  // stale time on screen for as long as someone is typing.
+  renderBoardAgenda();
+
   // A poll must not wipe a half-typed card. Same guard renderChores uses.
   if (wrap.contains(document.activeElement) &&
       /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+
+  // Cards are focusable, and a click focuses one, so deferring the rebuild
+  // while a card has focus (the way the input guard does) would freeze the
+  // board for as long as it stayed focused. Rebuild, then put focus back on the
+  // same card instead — Task 9's keyboard moves depend on it surviving a poll.
+  var active = document.activeElement;
+  var focusedId = (active && active.classList && active.classList.contains('card') &&
+                   wrap.contains(active)) ? active.dataset.id : null;
 
   var now = new Date().toISOString();
   var groups = BOARD.group(state.board);
@@ -1096,7 +1168,14 @@ function renderBoard() {
     wrap.appendChild(col);
   });
 
-  renderBoardAgenda();
+  // Matched by id rather than by a built selector: card ids come from the
+  // sheet, and nothing guarantees they are safe to interpolate into one.
+  if (focusedId) {
+    var cards = wrap.querySelectorAll('.card');
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].dataset.id === focusedId) { cards[i].focus(); break; }
+    }
+  }
 }
 
 /** One card. Faded in proportion to how long it has sat untouched. */
@@ -1145,7 +1224,7 @@ function cardEl(card, nowIso) {
 function renderBoardAgenda() {
   var el = document.getElementById('boardAgenda');
   if (!el) return;
-  var today = (state.events || []).filter(function (ev) { return ev.day === 'today'; });
+  var today = eventsOn('today');
   el.textContent = today.length
     ? 'Today: ' + today.map(function (ev) { return ev.when + ' ' + ev.what; }).join('  ·  ')
     : '';
@@ -1259,10 +1338,12 @@ function init() {
   }
 
   render();
-  refresh();
+  // Not refresh(): a reload that restored the board has already asked for the
+  // board (showView above), and that response carries the dashboard too.
+  refreshVisible();
   flush();
 
-  window.addEventListener('online', function () { flush(); refresh(); });
+  window.addEventListener('online', function () { flush(); refreshVisible(); });
 
   // Coming back to the page should feel instant, not "wait for the next tick".
   document.addEventListener('visibilitychange', function () {

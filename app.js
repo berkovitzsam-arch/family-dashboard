@@ -19,11 +19,43 @@ var TOKEN_KEY = 'fd.token';
 var THEME_KEY = 'fd.theme';
 var EMOJI_KEY = 'fd.emoji';
 var AWAKE_KEY = 'fd.awake';
+var BOARD_OK_KEY = 'fd.boardok';
 var THEMES = ['paper', 'pastel', 'jewel', 'almanac'];
 
-var state = { shopping: [], todo: [], note: '', events: [], chores: [], fetched: null };
+var state = { shopping: [], todo: [], note: '', events: [], chores: [], board: [], fetched: null };
 var queue = [];
 var who = localStorage.getItem(WHO_KEY) || '';
+
+/**
+ * Whether this device may see the board. The server decides this on every
+ * single request and independently refuses board rows and board ops to any
+ * device outside its allowlist, so this flag is only the UI affordance, never
+ * the security boundary.
+ *
+ * It is remembered per device (same shape as fd.who / fd.theme / fd.awake) so
+ * the icon is present offline and on the very first paint, before any response
+ * arrives. Without that, the board would be unreachable offline even though its
+ * rows sit in the local cache and board.js is in the service-worker shell —
+ * which would defeat the offline-first design. A device whose access has been
+ * revoked shows the icon exactly once more, gets nothing back, and clears the
+ * flag. The kitchen tablet never receives boardAllowed: true at all, so it
+ * never stores it.
+ */
+var boardAllowed = !!localStorage.getItem(BOARD_OK_KEY);
+
+var BOARD_LIST_NAMES = { now: 'Now', week: 'This week', later: 'Later',
+                         someday: 'Someday', done: 'Done' };
+var BOARD_SOURCE_BADGE = { capture: '🎙', vault: '📓' };
+
+function setBoardAllowed(on) {
+  boardAllowed = !!on;
+  if (boardAllowed) { localStorage.setItem(BOARD_OK_KEY, '1'); return; }
+  localStorage.removeItem(BOARD_OK_KEY);
+  // Access revoked mid-session: don't strand the device on a view the server
+  // will no longer feed. syncSwitches() takes the icon away on the next render
+  // either way, but the open view has to be closed explicitly.
+  if (boardVisible()) showView('dashboard');
+}
 
 function load(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) || fallback; }
@@ -315,6 +347,10 @@ function adopt(data) {
   state.note = data.note || '';
   state.events = data.events || [];
   state.chores = data.chores || [];
+  // Board rows ride their own request, so most responses legitimately omit
+  // them. Replacing state.board with [] here would blank the view every poll.
+  if (data.board) state.board = data.board;
+  if (typeof data.boardAllowed === 'boolean') setBoardAllowed(data.boardAllowed);
   state.fetched = new Date().toISOString();
   // A change from the other device counts as activity: whoever is watching is
   // probably mid-conversation about it, so stay on the fast poll for a bit.
@@ -340,6 +376,26 @@ function refresh() {
     .then(function (res) { if (res.ok && !queue.length) adopt(res.data); })
     .catch(function () {})
     .then(function () { refreshing = false; });
+}
+
+/**
+ * Board rows are private, so they are NOT part of the payload every family
+ * device polls. They are asked for explicitly, and only while the board is on
+ * screen — a phone showing the dashboard never requests them at all.
+ */
+var refreshingBoard = false;
+function refreshBoard() {
+  if (refreshingBoard || !navigator.onLine || !configured()) return;
+  refreshingBoard = true;
+  post({ action: 'data', wantBoard: true })
+    .then(function (res) { if (res.ok && !queue.length) adopt(res.data); })
+    .catch(function () {})
+    .then(function () { refreshingBoard = false; });
+}
+
+function boardVisible() {
+  var el = document.getElementById('boardView');
+  return !!el && !el.hidden;
 }
 
 /* ---------- polling ---------- */
@@ -371,7 +427,9 @@ function pollDelay() {
 function pollLoop() {
   clearTimeout(pollTimer);
   if (!document.hidden) {
-    refresh();
+    // The visible view decides what gets fetched: the private rows are only
+    // ever requested while someone is actually looking at the board.
+    if (boardVisible()) refreshBoard(); else refresh();
     FEEDS.refreshIfStale(render);            // feeds own their own, much slower cadence
   }
   render();                                  // keeps the "2m ago" stamp honest
@@ -507,6 +565,10 @@ function renderArc(dow) {
 }
 
 function render() {
+  // Both corner icons are derived in one place, so a poll-driven render lands
+  // on exactly the same answer showView() just produced instead of fighting it.
+  syncSwitches();
+
   var view = FEEDS.view();
 
   document.getElementById('day').textContent = view.day;
@@ -603,6 +665,7 @@ function render() {
     : '';
 
   if (!document.getElementById('choresView').hidden) renderChores();
+  if (boardVisible()) renderBoard();
 }
 
 /* ---------- self-update ---------- */
@@ -981,32 +1044,174 @@ function wireChoreAdd() {
   if (defInput) defInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
 }
 
-/* ---------- view switch (dashboard <-> chores) ---------- */
+/* ---------- board view ---------- */
+
+/**
+ * The five horizon columns, rebuilt from state. Everything about a card —
+ * which column, how urgent its date, how faded it has gone — is recomputed
+ * locally by board.js, so the view is identical offline.
+ */
+function renderBoard() {
+  var wrap = document.getElementById('boardColumns');
+  if (!wrap) return;
+  // A poll must not wipe a half-typed card. Same guard renderChores uses.
+  if (wrap.contains(document.activeElement) &&
+      /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+
+  var now = new Date().toISOString();
+  var groups = BOARD.group(state.board);
+  wrap.innerHTML = '';
+
+  BOARD.LISTS.forEach(function (listName) {
+    var col = document.createElement('div');
+    col.className = 'board-col';
+    col.dataset.list = listName;
+
+    var h = document.createElement('h2');
+    h.textContent = BOARD_LIST_NAMES[listName];
+    col.appendChild(h);
+
+    var cards = groups[listName];
+    if (!cards.length) {
+      var empty = document.createElement('div');
+      empty.className = 'card-empty';
+      empty.textContent = '—';
+      col.appendChild(empty);
+    }
+    cards.forEach(function (card) { col.appendChild(cardEl(card, now)); });
+    wrap.appendChild(col);
+  });
+
+  renderBoardAgenda();
+}
+
+/** One card. Faded in proportion to how long it has sat untouched. */
+function cardEl(card, nowIso) {
+  var el = document.createElement('article');
+  el.className = 'card';
+  el.dataset.id = card.id;
+  el.tabIndex = 0;
+  el.style.opacity = String(1 - 0.45 * BOARD.ageLevel(card, nowIso));
+
+  var title = document.createElement('div');
+  title.className = 'card-title';
+  title.textContent = card.title;
+  el.appendChild(title);
+
+  var bits = [];
+  if (card.label) bits.push(card.label);
+  if (card.note) bits.push(card.note);
+
+  var sub = document.createElement('div');
+  sub.className = 'card-sub';
+
+  var badge = BOARD_SOURCE_BADGE[card.source];
+  if (badge) {
+    var b = document.createElement('span');
+    b.className = 'card-badge';
+    b.textContent = badge;
+    b.title = card.source === 'capture' ? 'From a voice capture' : 'From the vault';
+    sub.appendChild(b);
+  }
+
+  if (card.due) {
+    var d = document.createElement('span');
+    d.className = 'due-' + BOARD.dueState(card, nowIso);
+    d.textContent = card.due;
+    sub.appendChild(d);
+    if (bits.length) sub.appendChild(document.createTextNode(' · '));
+  }
+  sub.appendChild(document.createTextNode(bits.join(' · ')));
+
+  if (sub.childNodes.length) el.appendChild(sub);
+  return el;
+}
+
+/** Today's events, already in the payload — free context beside the cards. */
+function renderBoardAgenda() {
+  var el = document.getElementById('boardAgenda');
+  if (!el) return;
+  var today = (state.events || []).filter(function (ev) { return ev.day === 'today'; });
+  el.textContent = today.length
+    ? 'Today: ' + today.map(function (ev) { return ev.when + ' ' + ev.what; }).join('  ·  ')
+    : '';
+}
+
+/* ---------- view switch (dashboard <-> chores <-> board) ---------- */
 
 var VIEW_KEY = 'fd.view';   // navigation state (per device, not synced)
 
+/**
+ * The single owner of both corner buttons. showView() and render() both need
+ * them updated, and render() runs on every poll tick — so rather than each
+ * deciding for itself (and re-showing a button the other just hid), both derive
+ * the same answer from boardAllowed and whichever view is actually on screen.
+ *
+ * `hidden` is set as a property, never as inline display: `.switch` sets
+ * display:flex, which beats the user-agent [hidden] rule, so index.html carries
+ * an explicit `.switch[hidden] { display: none; }` for exactly this.
+ */
+function syncSwitches() {
+  var boardEl = document.getElementById('boardView');
+  var choresEl = document.getElementById('choresView');
+  var onBoard = !!boardEl && !boardEl.hidden;
+  var onChores = !!choresEl && !choresEl.hidden;
+
+  var ch = document.getElementById('choresToggle');
+  if (ch) {
+    ch.hidden = onBoard;                  // the open view owns the 12px slot
+    ch.classList.toggle('on', onChores);  // swaps the broom icon for a back chevron
+    ch.setAttribute('aria-label', onChores ? 'Back to dashboard' : 'Switch to chores');
+  }
+
+  var bd = document.getElementById('boardToggle');
+  if (bd) {
+    bd.hidden = !boardAllowed || onChores;
+    bd.classList.toggle('on', onBoard);
+    bd.setAttribute('aria-label', onBoard ? 'Back to dashboard' : 'Switch to board');
+  }
+
+  // Two icons need a wider inset on the dashboard header than one does.
+  document.body.classList.toggle('has-board', boardAllowed);
+}
+
 function showView(name) {
-  var chores = name === 'chores';
-  document.getElementById('dashboardView').hidden = chores;
-  document.getElementById('choresView').hidden = !chores;
-  var btn = document.getElementById('choresToggle');
-  btn.classList.toggle('on', chores);   // swaps the broom icon for a back chevron
-  btn.setAttribute('aria-label', chores ? 'Back to dashboard' : 'Switch to chores');
-  try { sessionStorage.setItem(VIEW_KEY, name); } catch (e) {}
-  if (chores) renderChores();
+  var isChores = name === 'chores';
+  // A device the server has not cleared cannot reach the board even by asking
+  // for it directly; it lands back on the dashboard instead.
+  var isBoard = name === 'board' && boardAllowed;
+  document.getElementById('dashboardView').hidden = isChores || isBoard;
+  document.getElementById('choresView').hidden = !isChores;
+  document.getElementById('boardView').hidden = !isBoard;
+  syncSwitches();
+
+  // Store what actually opened, not what was asked for, so a refused 'board'
+  // is not replayed on every reload.
+  var opened = isBoard ? 'board' : (isChores ? 'chores' : 'dashboard');
+  try { sessionStorage.setItem(VIEW_KEY, opened); } catch (e) {}
+
+  if (isChores) renderChores();
+  if (isBoard) { renderBoard(); refreshBoard(); }
 }
 
 function wireSwitch() {
-  var btn = document.getElementById('choresToggle');
-  if (!btn) return;
-  btn.addEventListener('click', function () {
-    var showing = !document.getElementById('choresView').hidden;
-    showView(showing ? 'dashboard' : 'chores');
+  var ch = document.getElementById('choresToggle');
+  if (ch) ch.addEventListener('click', function () {
+    showView(document.getElementById('choresView').hidden ? 'chores' : 'dashboard');
+  });
+  var bd = document.getElementById('boardToggle');
+  if (bd) bd.addEventListener('click', function () {
+    showView(boardVisible() ? 'dashboard' : 'board');
   });
 }
 
 function init() {
   state = load(CACHE_KEY, state);
+  // load() replaces state wholesale, and a cache written by an older build has
+  // no board key at all. BOARD.group tolerates undefined, but the card writes
+  // that follow do not — this is what stops state.board.push from throwing on a
+  // device that has been running the app since before the board existed.
+  if (!Array.isArray(state.board)) state.board = [];
   queue = load(QUEUE_KEY, []);
 
   var shared = adoptSetupLink();
@@ -1019,7 +1224,8 @@ function init() {
   requestWakeLock();
   wireSwitch();
   wireChoreAdd();
-  if (sessionStorage.getItem(VIEW_KEY) === 'chores') showView('chores');
+  var savedView = sessionStorage.getItem(VIEW_KEY);
+  if (savedView === 'chores' || savedView === 'board') showView(savedView);
 
   hookAdd('addShopping', 'addShoppingBtn', 'shopping');
   hookAdd('addTodo', 'addTodoBtn', 'todo');

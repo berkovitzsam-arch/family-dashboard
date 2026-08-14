@@ -1868,6 +1868,68 @@ function toggleCardEditor(card) {
  * one of these on screen and it is always anchored to the right card, whatever
  * a poll tick does to the columns underneath it.
  */
+/** The vault this dashboard's notes live in, for obsidian:// deep links. */
+var VAULT_NAME = 'Vault';
+
+/**
+ * The file part of a source_ref. Two shapes are stored: a checkbox-derived card
+ * keeps '<path>#<the literal item text>', and a prose-derived one keeps
+ * '<path> §11.2' or a bare folder. Take everything before the first '#', then
+ * drop a trailing section marker.
+ */
+function refPath(ref) {
+  var head = String(ref || '').split('#')[0];
+  return head.replace(/\s+§.*$/, '').trim();
+}
+
+/**
+ * A line naming where a card came from, and a link that opens it in Obsidian
+ * where there is a note to open. Returns null for a card typed by hand, which
+ * is most of them — an empty row would be worse than none.
+ */
+function cardOrigin(card) {
+  var ref = card && card.source_ref;
+  if (!ref) return null;
+
+  var row = document.createElement('div');
+  row.className = 'card-origin';
+
+  // Word it by what is actually true of this card. A prose-derived card carries
+  // a vault path but is deliberately source:'manual' — the sweep only matches
+  // checkbox lines and would archive it otherwise — so it wears no badge on the
+  // front, and claiming "from the vault" here would contradict that.
+  var what = card.source === 'capture' ? 'From a voice capture'
+           : card.source === 'vault'   ? 'From the vault'
+           : 'Source';
+  var label = document.createElement('span');
+  label.className = 'card-origin-what';
+  label.textContent = what;
+  row.appendChild(label);
+
+  var path = refPath(ref);
+  if (!path) return row;
+
+  // Only a real note can be opened; a folder or a bare section reference is
+  // still worth showing as text.
+  if (/\.md$/i.test(path)) {
+    var a = document.createElement('a');
+    a.className = 'card-origin-link';
+    a.href = 'obsidian://open?vault=' + encodeURIComponent(VAULT_NAME) +
+             '&file=' + encodeURIComponent(path.replace(/\.md$/i, ''));
+    a.textContent = path.replace(/\.md$/i, '');
+    a.title = 'Open in Obsidian';
+    // The editor's own click handling must not treat this as a card tap.
+    a.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    row.appendChild(a);
+  } else {
+    var plain = document.createElement('span');
+    plain.className = 'card-origin-link';
+    plain.textContent = path;
+    row.appendChild(plain);
+  }
+  return row;
+}
+
 function openCardEditor(anchor, card, focusCtl) {
   var box = document.createElement('div');
   box.className = 'card-editor';
@@ -1888,6 +1950,12 @@ function openCardEditor(anchor, card, focusCtl) {
   box.appendChild(title);
   box.appendChild(note);
   box.appendChild(due);
+
+  // What the badge on the card front is hinting at. A glyph alone taught nobody
+  // anything — there is no hover on a phone — so the card it marks says where it
+  // came from, and offers to open it.
+  var origin = cardOrigin(card);
+  if (origin) box.appendChild(origin);
 
   /**
    * Only the text fields that actually differ from the card, shaped as a

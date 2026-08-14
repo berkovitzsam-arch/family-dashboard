@@ -382,6 +382,19 @@
                       border-bottom: 1.5px solid var(--line);
                       transition: border-color 0.15s ease; }
   .card-editor .add:focus { border-bottom-color: var(--ink); }
+  /* Where a card came from. Sits below the fields, above the pickers, in the
+     same micro-typography the picker captions use so it reads as a label rather
+     than as another thing to edit. */
+  .card-origin { font-size: 12px; color: var(--mute); line-height: 1.45;
+                 display: flex; flex-wrap: wrap; gap: 2px 6px; }
+  .card-origin-what { text-transform: uppercase; letter-spacing: 0.06em;
+                      font: 600 11px var(--display); }
+  .card-origin-link { word-break: break-word; }
+  a.card-origin-link { color: var(--accent-strong); text-decoration: underline;
+                       text-underline-offset: 2px; }
+  a.card-origin-link:focus-visible { outline: 2px solid var(--accent-strong);
+                                     outline-offset: 2px; }
+
   .card-editor-actions { display: flex; align-items: center; gap: 8px; }
   .card-del { margin-left: auto; }
   /* Armed for the confirming second tap — the same cue a pressed pill gets. */

@@ -477,6 +477,15 @@
     .board-agenda { order: 2; }
     #boardAdd { order: 3; margin-bottom: 20px; }
     #boardColumns { order: 4; }
+
+    /* Hoisting the add row also hoisted its two pickers, and seven pills is
+       ~250px — a third of a phone screen standing between the top of the board
+       and the first card, which is most of what hoisting was meant to fix. The
+       pickers only matter while something is actually being added, so they wait
+       until the row is in use. :focus-within, not a class, so tapping a pill
+       (itself focusable) cannot dismiss the row it lives in. */
+    #boardAdd #addCardOpts { display: none; }
+    #boardAdd:focus-within #addCardOpts { display: flex; }
   }
 
   /* A foldable heading is a real button, but it is still the section's name —

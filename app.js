@@ -1191,6 +1191,13 @@ function renderBoard() {
   // stale time on screen for as long as someone is typing.
   renderBoardAgenda();
 
+  // A poll must not destroy a drag in progress. This rebuild replaces the node
+  // under the pointer AND every drop target with it, so the gesture would die
+  // mid-air — and unlike the editor below, there is no way to carry a drag
+  // across a rebuild. Defer instead; dragend repaints (and dragActive lets go
+  // by itself if a drag ever fails to end).
+  if (dragActive()) return;
+
   // A poll must not wipe a half-typed card. Same guard renderChores uses.
   if (wrap.contains(document.activeElement) &&
       /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
@@ -1234,6 +1241,7 @@ function renderBoard() {
     var col = document.createElement('div');
     col.className = 'board-col';
     col.dataset.list = listName;
+    wireColumnDrop(col, listName);
 
     var h = document.createElement('h2');
     h.textContent = BOARD_LIST_NAMES[listName];
@@ -1246,7 +1254,7 @@ function renderBoard() {
       empty.textContent = '—';
       col.appendChild(empty);
     }
-    cards.forEach(function (card) { col.appendChild(cardEl(card, now)); });
+    cards.forEach(function (card) { col.appendChild(cardEl(card, now, listName)); });
     wrap.appendChild(col);
   });
 
@@ -1274,8 +1282,13 @@ function renderBoard() {
   else if (focusEl && !wantCtl) focusEl.focus();
 }
 
-/** One card. Faded in proportion to how long it has sat untouched. */
-function cardEl(card, nowIso) {
+/**
+ * One card. Faded in proportion to how long it has sat untouched.
+ *
+ * `listName` is the column it is being drawn in, which is what a drop onto it
+ * means — see wireCardDrag.
+ */
+function cardEl(card, nowIso, listName) {
   var el = document.createElement('article');
   el.className = 'card';
   el.dataset.id = card.id;
@@ -1326,6 +1339,15 @@ function cardEl(card, nowIso) {
   el.addEventListener('keydown', function (ev) {
     if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggleCardEditor(card); }
   });
+
+  // Deliberately NOT closing the editor on a drag, which is why closeCardEditor
+  // was kept out of moveCard. The column picker closes it because on a phone the
+  // card lands somewhere off screen and the box would be left pointing at
+  // nothing; a drag is a wide-screen gesture where all five columns are visible
+  // at once, and renderBoard re-anchors the editor to its card by id wherever it
+  // ends up — carrying the unsaved draft with it. Throwing away someone's typing
+  // because they dragged a different card would be worse than either.
+  wireCardDrag(el, card, listName);
   return el;
 }
 
@@ -1424,6 +1446,59 @@ function moveCard(id, list, pos) {
   enqueue({ op: 'cardMove', id: id, list: list, pos: pos });
 }
 
+/**
+ * Where a card dropped above `beforeId` in `listName` should sit; a null
+ * beforeId means "at the end". Read off the whole board rather than the
+ * filtered view, for the same reason endPos is: a hidden card is still a
+ * neighbour. `0` is a legitimate position, so neighbours are tested for
+ * existence, never for truthiness — posBetween does the rest.
+ */
+function dropPosition(listName, beforeId) {
+  var cards = BOARD.group(state.board)[listName];
+  if (!beforeId) {
+    return BOARD.posBetween(cards.length ? cards[cards.length - 1].pos : null, null);
+  }
+  for (var i = 0; i < cards.length; i++) {
+    if (cards[i].id === beforeId) {
+      return BOARD.posBetween(i > 0 ? cards[i - 1].pos : null, cards[i].pos);
+    }
+  }
+  // The card dropped onto has gone (deleted on the other device between the
+  // rebuild and the drop). Landing at the end beats throwing the drop away.
+  return BOARD.posBetween(cards.length ? cards[cards.length - 1].pos : null, null);
+}
+
+/**
+ * Respace a list whose positions have closed up. Midpoint insertion halves the
+ * gap every time, so repeated drops into the same place eventually run out of
+ * room; board.js decides when, this writes the answer back.
+ *
+ * Only the rows that actually move are written. An op for a card already
+ * sitting on its fresh position would spend an Apps Script call from a quota
+ * the whole family shares, and bump its updated_at — which resets the age fade
+ * on a card nobody touched, and that fade is the point of the aging.
+ */
+function renormalizeList(listName) {
+  if (!boardAllowed) return;
+  var cards = BOARD.group(state.board)[listName];
+  if (!BOARD.needsRenormalize(cards.map(function (c) { return c.pos; }))) return;
+  var fresh = BOARD.renormalize(cards.length);
+  var ops = [];
+  cards.forEach(function (card, i) {
+    if (card.pos === fresh[i]) return;
+    card.pos = fresh[i];
+    // cardMove_ stamps updated_at on the server whatever the op carries, so the
+    // local row has to agree or the next fetch would visibly jump the fade.
+    card.updated_at = new Date().toISOString();
+    // No `list`: cardMove_ writes only the fields an op carries, so a pos-only
+    // move leaves the column — and the done_at stamp that goes with it — alone.
+    ops.push({ op: 'cardMove', id: card.id, pos: fresh[i] });
+  });
+  if (!ops.length) return;
+  save(CACHE_KEY, state);
+  ops.forEach(function (op) { enqueue(op); });
+}
+
 function deleteCard(id) {
   if (!boardAllowed) return;
   var card = findCard(id);
@@ -1433,6 +1508,188 @@ function deleteCard(id) {
   save(CACHE_KEY, state);
   announce(card.title + ' deleted');
   enqueue({ op: 'cardDelete', id: id });
+}
+
+/* ---------- board drag and drop (wide screens only) ---------- */
+
+/**
+ * Dragging is a laptop shortcut, never the only route: the card editor's column
+ * picker does everything a drag does, which is what makes the phone layout —
+ * one stacked column, nothing draggable — work at all. Below 900px this whole
+ * section stays unwired.
+ *
+ * The card being dragged, when it started, and the column currently outlined as
+ * its destination. All three live out here rather than in a handler's closure
+ * because renderBoard() rebuilds #boardColumns wholesale on every poll tick: a
+ * drag outlives any element it began on.
+ */
+var draggingId = null;
+var dragStartedAt = 0;
+var dropCol = null;
+
+/**
+ * How long a drag may hold off the rebuild before the hold is assumed stuck.
+ *
+ * dragend is specified to fire however a drag ends — dropped on nothing,
+ * cancelled with Escape, the window taken away mid-gesture — and it does, which
+ * is what normally clears this. But the cost of the two failures is wildly
+ * asymmetric: a flag stuck on freezes the board for the rest of the session,
+ * while an expiry that fires under a genuinely slow drag costs one drag the
+ * user can simply repeat. So it expires too. Half a minute is far longer than
+ * any real drag and far shorter than "never repaints again".
+ */
+var DRAG_MAX_MS = 30000;
+
+/** True while a drag is in flight — and self-clearing if one never ended. */
+function dragActive() {
+  if (!draggingId) return false;
+  if (Date.now() - dragStartedAt < DRAG_MAX_MS) return true;
+  endDrag();
+  return false;
+}
+
+/** Forget the drag and take every visual trace of it off screen. */
+function endDrag() {
+  draggingId = null;
+  dragStartedAt = 0;
+  setDropCol(null);
+  // Found by query rather than kept in a closure: after the expiry above, the
+  // element the drag started on may already have been rebuilt away.
+  var wrap = document.getElementById('boardColumns');
+  if (!wrap) return;
+  var lit = wrap.querySelectorAll('.card.dragging');
+  for (var i = 0; i < lit.length; i++) lit[i].classList.remove('dragging');
+}
+
+/** Outline exactly one column as the destination, or none. */
+function setDropCol(col) {
+  if (dropCol === col) return;
+  if (dropCol) dropCol.classList.remove('drop-target');
+  dropCol = col;
+  if (dropCol) dropCol.classList.add('drop-target');
+}
+
+/**
+ * Land the dragged card in `listName`, above `beforeId` — null meaning at the
+ * end. Both drop paths (onto a card, onto a column) come through here so the
+ * blur, the position, the respace and the repaint cannot drift apart.
+ */
+function dropCard(listName, beforeId) {
+  var id = draggingId;
+  // Before the write, not after: the rebuild the write triggers is the repaint,
+  // and it must not be deferred by a drag it has already finished.
+  endDrag();
+  if (!id) return;
+  // The seventh caller of this, and for the usual reason: renderBoard defers
+  // the ENTIRE rebuild while a field in the columns has focus, so the move
+  // would land in state, the cache and the queue and never appear on screen.
+  // A mousedown on a card normally focuses the card and blurs the field for
+  // us — but "normally" is not a guarantee across browsers, and this costs
+  // nothing when there was nothing focused.
+  blurBoardField();
+  moveCard(id, listName, dropPosition(listName, beforeId));
+  renormalizeList(listName);
+  // No renderBoard() here: moveCard enqueues, enqueue() renders, and so does
+  // every op renormalizeList adds. Calling it as well would rebuild the columns
+  // (and the open editor) twice for one drop — see the board writes above.
+}
+
+/**
+ * Make one card draggable, and a landing place for the others.
+ *
+ * The breakpoint is re-read here rather than latched at startup, and this runs
+ * per card on every rebuild — so a window dragged across 900px corrects itself
+ * on the next repaint (a poll tick at worst) instead of needing a reload.
+ *
+ * `listName` is the column the card is drawn in, not card.list: group() files a
+ * card with an unrecognised list under 'later', and what the user is dropping
+ * into is the column they can see.
+ */
+function wireCardDrag(el, card, listName) {
+  if (!window.matchMedia || !window.matchMedia('(min-width: 900px)').matches) return;
+  el.draggable = true;
+
+  el.addEventListener('dragstart', function (ev) {
+    endDrag();                     // anything a previous drag left behind
+    draggingId = card.id;
+    dragStartedAt = Date.now();
+    el.classList.add('dragging');
+    if (!ev.dataTransfer) return;
+    // Firefox starts no drag at all unless the transfer carries something.
+    try { ev.dataTransfer.setData('text/plain', card.id); } catch (e) {}
+    ev.dataTransfer.effectAllowed = 'move';
+  });
+
+  el.addEventListener('dragend', function () {
+    // draggingId is still set only if the drag ended WITHOUT a drop — dropCard
+    // clears it first — so a completed drop does not rebuild the columns a
+    // second time. A cancelled one does need the repaint: every poll tick since
+    // dragstart was deferred, and the board may be showing stale rows.
+    var cancelled = !!draggingId;
+    endDrag();
+    if (cancelled) renderBoard();
+  });
+
+  // Dropping onto a card means "above this one". Only `drop` is handled here;
+  // dragover is deliberately left to bubble to the column, which is what keeps
+  // the column outlined while the pointer is over the cards inside it.
+  el.addEventListener('drop', function (ev) {
+    if (!draggingId) return;              // someone else's drag: not ours to eat
+    ev.preventDefault();
+    ev.stopPropagation();                 // this card is the target, not the column
+    // Dropped on itself. The event is still consumed — letting it reach the
+    // column would append the card to the end of its own list, which is not
+    // "nothing" by any reading of the gesture. dragend does the cleanup.
+    if (draggingId === card.id) return;
+    dropCard(listName, card.id);
+  });
+}
+
+/** A whole column as a landing place: dropping on it appends to the end. */
+function wireColumnDrop(col, listName) {
+  if (!window.matchMedia || !window.matchMedia('(min-width: 900px)').matches) return;
+
+  // Some engines decide droppability on dragenter as well as dragover. Both,
+  // and only while one of our own cards is in flight — a file or a selection
+  // dragged in from elsewhere is not something this board accepts.
+  col.addEventListener('dragenter', function (ev) {
+    if (!draggingId) return;
+    ev.preventDefault();
+  });
+  col.addEventListener('dragover', function (ev) {
+    if (!draggingId) return;
+    // This preventDefault is what makes the column a drop site — and the cards
+    // inside it too, since their dragover bubbles up to here.
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+    setDropCol(col);
+  });
+  col.addEventListener('drop', function (ev) {
+    if (!draggingId) return;
+    ev.preventDefault();
+    dropCard(listName, null);
+  });
+}
+
+/**
+ * The outline goes on from dragover and comes off when the drag leaves the
+ * columns altogether.
+ *
+ * Wired once, on the container renderBoard empties rather than replaces, so it
+ * survives every rebuild. On dragleave, relatedTarget is the element being
+ * entered: moving between two columns, or from a column onto a card inside it,
+ * must not clear an outline the very next dragover would put straight back —
+ * that reads as a flicker. When it is null (the pointer left the window)
+ * contains() says false, which is exactly the right answer.
+ */
+function wireBoardDrag() {
+  var wrap = document.getElementById('boardColumns');
+  if (!wrap) return;
+  wrap.addEventListener('dragleave', function (ev) {
+    if (!draggingId) return;
+    if (wrap.contains(ev.relatedTarget)) return;
+    setDropCol(null);
+  });
 }
 
 /* ---------- board card editor ---------- */
@@ -1836,6 +2093,7 @@ function init() {
   // #boardView, which stays hidden until the server says otherwise, and every
   // write it can reach re-checks boardAllowed for itself.
   wireBoardControls();
+  wireBoardDrag();
   var savedView = sessionStorage.getItem(VIEW_KEY);
   if (savedView === 'chores' || savedView === 'board') showView(savedView);
 

@@ -340,6 +340,24 @@
   .due-soon { color: var(--mute); }
   .card-empty { color: var(--mute); font-style: italic; font-size: 14px; }
 
+  /* The inline card editor is the card's sibling, not its child, so it sits in
+     the column flow directly beneath it in both layouts. The accent edge ties it
+     back to the card it belongs to. */
+  .card-editor { border: 1px solid var(--line); border-left: 3px solid var(--accent-strong);
+                 border-radius: 8px; padding: 10px; margin: -4px 0 10px;
+                 display: flex; flex-direction: column; gap: 8px; }
+  /* .add is borderless by design — it borrows the underline from .addrow, which
+     the editor does not use. Give it its own, same weight, same focus cue. */
+  .card-editor .add { font-size: 15px; padding: 7px 2px;
+                      border-bottom: 1.5px solid var(--line);
+                      transition: border-color 0.15s ease; }
+  .card-editor .add:focus { border-bottom-color: var(--ink); }
+  .card-editor-actions { display: flex; align-items: center; gap: 8px; }
+  .card-del { margin-left: auto; }
+  /* Two pickers (label, column) share one row: a wider gap between the groups
+     than inside them, so they do not read as one flat run of seven pills. */
+  #addCardOpts { gap: 8px 16px; }
+
   @media (min-width: 900px) {
     .board-cols { grid-template-columns: repeat(5, 1fr); align-items: start; }
   }

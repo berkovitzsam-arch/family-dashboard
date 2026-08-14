@@ -1319,8 +1319,15 @@ function cardEl(card, nowIso, listName) {
   title.textContent = card.title;
   el.appendChild(title);
 
+  // The meta line reads: due date, then label, then note. The date goes first
+  // because it is what the eye actually scans a column for.
+  //
+  // The label is drawn ONLY under the 'All' filter. Filtered to one label, the
+  // pills at the top of the view already say which one you are looking at, so
+  // the word on every single card is pure repetition. It is never colour-coded:
+  // this app tells things apart by shape, never by hue.
   var bits = [];
-  if (card.label) bits.push(card.label);
+  if (card.label && boardFilter === 'all') bits.push(card.label);
   if (card.note) bits.push(card.note);
 
   var sub = document.createElement('div');
@@ -1335,10 +1342,15 @@ function cardEl(card, nowIso, listName) {
     sub.appendChild(b);
   }
 
-  if (card.due) {
+  var dueText = BOARD.dueLabel(card.due, nowIso);
+  if (dueText) {
     var d = document.createElement('span');
     d.className = 'due-' + BOARD.dueState(card, nowIso);
-    d.textContent = card.due;
+    d.textContent = dueText;
+    // 'Thu' and '20 Aug' are easier to read but carry less than the date did —
+    // no year, no which-Thursday. The exact date stays one hover away rather
+    // than being thrown out. Sliced the same way the editor's date field is.
+    d.title = String(card.due).slice(0, 10);
     sub.appendChild(d);
     if (bits.length) sub.appendChild(document.createTextNode(' · '));
   }
@@ -1751,6 +1763,33 @@ function segRow(options, current, onPick, ctl) {
 }
 
 /**
+ * A captioned picker: `row` under a small heading in the same micro-type the
+ * column headers use.
+ *
+ * The board stacks two pickers that choose different things — a label and a
+ * column — and without a caption apiece they read as one flat run of seven
+ * pills with no hint that picking from the left half means something different
+ * from picking from the right. The chore pickers deliberately do NOT use this:
+ * each of those sits in a row that has already said what it is.
+ *
+ * role=group + aria-label rather than aria-labelledby, so nothing here has to
+ * mint a unique id — the board never builds a selector out of a value either.
+ */
+function segGroup(caption, row) {
+  var g = document.createElement('div');
+  g.className = 'seg-group';
+  g.setAttribute('role', 'group');
+  g.setAttribute('aria-label', caption);
+  var cap = document.createElement('div');
+  cap.className = 'seg-cap';
+  cap.textContent = caption;
+  cap.setAttribute('aria-hidden', 'true');   // the group's own name already says it
+  g.appendChild(cap);
+  g.appendChild(row);
+  return g;
+}
+
+/**
  * The control inside `box` carrying this data-ctl key. Walked rather than
  * selected — the keys here are our own constants and would be safe either way,
  * but the board deliberately never builds a selector out of a value.
@@ -1881,7 +1920,7 @@ function openCardEditor(anchor, card, focusCtl) {
   // card you are still editing, the card stays exactly where it is, and closing
   // would throw away anything typed into the fields above but not yet saved.
   // The rebuild carries both across (see editDraft in renderBoard).
-  box.appendChild(segRow(LABEL_OPTIONS, card.label, function (v) {
+  box.appendChild(segGroup('Label', segRow(LABEL_OPTIONS, card.label, function (v) {
     if (v === card.label) return;                 // already this label: nothing to write
     blurBoardField();
     var fields = { label: v };
@@ -1899,13 +1938,13 @@ function openCardEditor(anchor, card, focusCtl) {
       announce((fields.title || card.title) + ' saved as ' + v +
                ' — hidden by the ' + boardFilter + ' filter');
     }
-  }, 'label:'));
+  }, 'label:')));
 
   // Moving does close it: the card leaves the column this box is anchored
   // under, which on a phone means it lands somewhere off screen entirely. The
   // move is the whole gesture, so it ends the interaction — announced, because
   // with the editor gone the only feedback is the card appearing elsewhere.
-  box.appendChild(segRow(LIST_OPTIONS, card.list, function (v) {
+  box.appendChild(segGroup('Column', segRow(LIST_OPTIONS, card.list, function (v) {
     if (v === card.list) return;
     blurBoardField();
     var pos = endPos(v);
@@ -1913,7 +1952,7 @@ function openCardEditor(anchor, card, focusCtl) {
     focusCardId = card.id;
     announce(card.title + ' moved to ' + BOARD_LIST_NAMES[v]);
     moveCard(card.id, v, pos);
-  }, 'list:'));
+  }, 'list:')));
 
   var actions = document.createElement('div');
   actions.className = 'card-editor-actions';
@@ -2011,8 +2050,13 @@ function wireBoardControls() {
     if (e.key === 'Enter') { e.preventDefault(); submit(); }
   });
 
-  opts.appendChild(segRow(LABEL_OPTIONS, addCardLabel, function (v) { addCardLabel = v; }));
-  opts.appendChild(segRow(LIST_OPTIONS, addCardList, function (v) { addCardList = v; }));
+  // Captioned for the same reason the editor's two pickers are: "Personal
+  // School Now This week Later Someday Done" in one run says nothing about
+  // which half does what.
+  opts.appendChild(segGroup('Label',
+    segRow(LABEL_OPTIONS, addCardLabel, function (v) { addCardLabel = v; })));
+  opts.appendChild(segGroup('Column',
+    segRow(LIST_OPTIONS, addCardList, function (v) { addCardList = v; })));
 
   filter.appendChild(segRow(FILTER_OPTIONS, boardFilter, function (v) {
     // The sixth caller of the rebuild, and the last one to need this: on a

@@ -89,6 +89,35 @@ var BOARD = (function () {
   }
 
   /**
+   * A due date as a person would say it: 'Today', 'Tomorrow', 'Thu', '20 Aug',
+   * '3 days late'. A raw '2026-08-12' makes the reader do the arithmetic that
+   * daysUntil already did.
+   *
+   * The date key is parsed at NOON UTC before any name is read off it. A key is
+   * a calendar date with no time, and midnight UTC is the previous evening in
+   * New York — so 'YYYY-MM-DDT00:00:00Z' formatted in TZ names the wrong
+   * weekday. Noon is mid-morning in NY and mid-evening in Sydney: the same
+   * calendar day everywhere this app is ever read, whatever the device zone.
+   */
+  function dueLabel(due, nowIso) {
+    var key = dueKey(due);
+    if (!key) return '';
+    var d = daysUntil(key, nowIso);
+    if (!(d === d)) return '';   // a malformed date says nothing rather than 'Invalid Date'
+    if (d < -1) return (-d) + ' days late';
+    if (d === -1) return 'Yesterday';
+    if (d === 0) return 'Today';
+    if (d === 1) return 'Tomorrow';
+    var at = new Date(key + 'T12:00:00Z');
+    // Inside the week a weekday is enough; past that it needs a date. The day
+    // number and the month name are formatted separately and joined rather than
+    // taken from one locale pattern, so the order is ours and not the runtime's.
+    if (d < 7) return at.toLocaleDateString('en-US', { timeZone: TZ, weekday: 'short' });
+    return at.toLocaleDateString('en-US', { timeZone: TZ, day: 'numeric' }) + ' ' +
+           at.toLocaleDateString('en-US', { timeZone: TZ, month: 'short' });
+  }
+
+  /**
    * 0 while a card is fresh, ramping to 1 once it has sat untouched for
    * AGE_FULL days. The view maps this onto opacity, so an ignored card visibly
    * recedes — the one Trello idea aimed at cards rotting unlooked-at.
@@ -126,6 +155,7 @@ var BOARD = (function () {
     renormalize: renormalize,
     group: group,
     dueState: dueState,
+    dueLabel: dueLabel,
     ageLevel: ageLevel,
     placeByDue: placeByDue,
     _test: { TZ: TZ, STEP: STEP, MIN_GAP: MIN_GAP,

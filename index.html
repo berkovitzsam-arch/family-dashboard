@@ -335,10 +335,40 @@
   .card-title { font-size: 15px; }
   .card-sub { font-size: 12px; color: var(--mute); margin-top: 3px; }
   .card-badge { margin-right: 5px; }
-  .due-overdue { color: var(--accent-strong); font-weight: 600; }
-  .due-today { font-weight: 600; }
+  /* Late and today are pills, not just colours. This board exists to catch work
+     that rots unnoticed, so "late" has to survive a glance — and a colour alone
+     does not: it is the same size and weight as the muted text either side of
+     it, and in the dark theme the accent sits close enough to the body text to
+     disappear. Filled for overdue, outlined for today: the same shape-carries-
+     the-meaning rule the event rules follow, with colour only reinforcing it. */
+  .due-overdue { color: var(--paper); background: var(--accent-strong);
+                 padding: 1px 7px; border-radius: 999px; font-weight: 600; }
+  .due-today { border: 1px solid var(--ink); padding: 0 6px;
+               border-radius: 999px; font-weight: 600; }
   .due-soon { color: var(--mute); }
   .card-empty { color: var(--mute); font-style: italic; font-size: 14px; }
+
+  /* Done is a holding pen — it is swept, and nothing in it is waiting on you.
+     It recedes, but NOT via opacity on the column: every card already carries an
+     inline opacity from the age fade, a parent opacity multiplies with it, and a
+     card finished this morning would come out looking like a month-old one.
+     Colour only, which the fade cannot collide with. */
+  .board-col[data-list="done"] h2 { color: var(--faint); }
+  /* Dashed, not a lighter colour: --line is already the lightest rule token
+     there is, and --faint is darker than it in every theme, so tinting the
+     border would make Done louder rather than quieter. Breaking the rule up
+     reads as less finished-looking at the same weight. */
+  .board-col[data-list="done"] .card { border-style: dashed; }
+  .board-col[data-list="done"] .card-title { color: var(--mute); }
+  .board-col[data-list="done"] .card-sub { color: var(--faint); }
+  /* A finished card's due date is history, not a warning — and most of them
+     have one in the past, so without this every second card in Done wears a
+     filled "9 days late" pill in the one column where nothing is late. Undo
+     both pills back to plain text here. */
+  .board-col[data-list="done"] .due-overdue,
+  .board-col[data-list="done"] .due-today {
+    color: inherit; background: none; border-color: transparent;
+    padding: 0; font-weight: inherit; }
 
   /* The inline card editor is the card's sibling, not its child, so it sits in
      the column flow directly beneath it in both layouts. The accent edge ties it
@@ -356,12 +386,36 @@
   .card-del { margin-left: auto; }
   /* Armed for the confirming second tap — the same cue a pressed pill gets. */
   .card-del.armed { color: var(--accent-strong); border-color: var(--accent-strong); }
-  /* Two pickers (label, column) share one row: a wider gap between the groups
-     than inside them, so they do not read as one flat run of seven pills. */
-  #addCardOpts { gap: 8px 16px; }
+  /* Two pickers (label, column) share one row, and without help they read as
+     one flat run of seven pills with nothing saying the left half chooses a
+     different kind of thing from the right. Two cues, not one: a wider gap
+     between the groups than inside them… */
+  #addCardOpts { gap: 10px 20px; align-items: flex-start; }
+  /* …and a caption apiece. Deliberately the same micro-type as .board-col h2 —
+     the vocabulary this app already uses for "this names the thing below it".
+     Board-only: the chore pickers each sit in a row that has already said what
+     it is, and gain nothing from a second label. */
+  .seg-group { display: flex; flex-direction: column; }
+  .seg-cap { font: 600 11px var(--display); color: var(--mute);
+             text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 6px; }
 
   @media (min-width: 900px) {
     .board-cols { grid-template-columns: repeat(5, 1fr); align-items: start; }
+    /* An empty column was a ~40px sliver — a poor drop target and barely a
+       region at all. This gives every column a floor so the five read as five
+       defined places, and the drop-target outline follows the taller box. */
+    .board-col { min-height: 140px; }
+    /* The editor lives inside a ~230px column here, where the default pills wrap
+       the column picker to four rows and crush the date field beside them. Shave
+       the pills rather than the touch targets on the phone, which are fine. */
+    .card-editor { padding: 9px; gap: 7px; }
+    .card-editor .seg { font-size: 12px; padding: 4px 8px; }
+    .card-editor .seg-row { gap: 6px; }
+    .card-editor .seg-cap { margin-bottom: 4px; }
+    /* Save and Delete stay on one line: the row must not wrap, and neither
+       button may break its own word to make itself fit. */
+    .card-editor-actions { flex-wrap: nowrap; }
+    .card-editor-actions .addbtn, .card-editor-actions .seg { white-space: nowrap; }
   }
 
   .chores-head { justify-content: flex-start; }

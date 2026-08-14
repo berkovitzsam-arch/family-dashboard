@@ -118,6 +118,26 @@ var BOARD = (function () {
   }
 
   /**
+   * When a finished card was finished. A completed card has no business saying
+   * "12 days late" — the deadline stopped mattering the moment it was done, and
+   * a red pill on the one column where nothing can be late is just noise.
+   *
+   * Deliberately shaped like dueLabel's output so the two read as one family,
+   * but always backward-looking: nothing here can ever be in the future.
+   */
+  function doneLabel(doneAt, nowIso) {
+    if (!doneAt) return 'Done';
+    var d = daysUntil(dateKeyIn(doneAt), nowIso);
+    if (!(d === d)) return 'Done';
+    if (d >= 0) return 'Done today';        // >= guards a clock a shade ahead
+    if (d === -1) return 'Done yesterday';
+    var at = new Date(dateKeyIn(doneAt) + 'T12:00:00Z');
+    if (d > -7) return 'Done ' + at.toLocaleDateString('en-US', { timeZone: TZ, weekday: 'short' });
+    return 'Done ' + at.toLocaleDateString('en-US', { timeZone: TZ, day: 'numeric' }) + ' ' +
+           at.toLocaleDateString('en-US', { timeZone: TZ, month: 'short' });
+  }
+
+  /**
    * 0 while a card is fresh, ramping to 1 once it has sat untouched for
    * AGE_FULL days. The view maps this onto opacity, so an ignored card visibly
    * recedes — the one Trello idea aimed at cards rotting unlooked-at.
@@ -156,6 +176,7 @@ var BOARD = (function () {
     group: group,
     dueState: dueState,
     dueLabel: dueLabel,
+    doneLabel: doneLabel,
     ageLevel: ageLevel,
     placeByDue: placeByDue,
     _test: { TZ: TZ, STEP: STEP, MIN_GAP: MIN_GAP,

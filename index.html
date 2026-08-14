@@ -277,6 +277,11 @@
        actually hides the view (an unguarded display would override it). */
     #dashboardView:not([hidden]) { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
     #choresView:not([hidden]) { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+    /* Same treatment, same reason: body sets overflow:hidden here, which
+       propagates to the viewport, so a view that does not scroll its own
+       overflow simply loses whatever falls below the fold. A tall board is the
+       normal case on a laptop, and Task 9 puts drop targets down there. */
+    #boardView:not([hidden]) { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
   }
 
   /* top-left view switch (broom icon), mirroring the top-right gear */
@@ -289,6 +294,130 @@
   .switch .ic-back { display: none; }
   .switch.on .ic-broom { display: none; }
   .switch.on .ic-back { display: block; }
+
+  /* Second corner icon. Only drawn on board-enabled devices, so the kitchen
+     tablet and Zissy's phones still show exactly one. When either sub-view is
+     open the surviving button becomes the back chevron and takes the 12px slot. */
+  /* The base .switch rule above sets display:flex unconditionally; an author
+     rule beats the UA [hidden]{display:none} rule regardless of specificity
+     (same trap as #dashboardView/#choresView, guarded there with :not([hidden])
+     — see comment near the desktop-frame media query). #boardToggle carries
+     `hidden` until a board-enabled device is confirmed, so it needs its own
+     higher-specificity override or it renders anyway. */
+  .switch[hidden] { display: none; }
+  .board-switch { left: 54px; }
+  .switch.on { left: 12px; }
+  .switch .ic-board { display: block; }
+  .switch.on .ic-board { display: none; }
+  /* Scoped to #dashboardView's own header, not any header under body.has-board —
+     the chores view's header only ever shows the back chevron at the 12px slot
+     and must not inherit this inset once has-board is set. The almanac override
+     below repeats the #dashboardView scope so its specificity (1,3,2) still
+     beats this rule's (1,1,2); dropping the ID from either side would flip it. */
+  body.has-board #dashboardView header { padding-left: 84px; }
+  :root[data-theme="almanac"] body.has-board #dashboardView header { padding-left: 0; }
+
+  .board-head { display: flex; justify-content: space-between; align-items: baseline;
+                gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .board-agenda { color: var(--mute); font-size: 14px; margin-bottom: 14px; }
+
+  /* One grid for both layouts: five columns on a laptop, a single stacked
+     column on a phone. Same DOM either way — only dragging is size-dependent. */
+  .board-cols { display: grid; gap: 14px; grid-template-columns: 1fr; }
+  .board-col h2 { font: 600 13px var(--display); color: var(--mute);
+                  text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 8px; }
+  .board-col.drop-target { outline: 2px dashed var(--accent-strong); outline-offset: 4px; }
+
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+          margin-bottom: 8px; cursor: pointer; background: none; }
+  .card:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+  .card.dragging { opacity: 0.4; }
+  .card-title { font-size: 15px; }
+  .card-sub { font-size: 12px; color: var(--mute); margin-top: 3px; }
+  .card-badge { margin-right: 5px; }
+  /* Late and today are pills, not just colours. This board exists to catch work
+     that rots unnoticed, so "late" has to survive a glance — and a colour alone
+     does not: it is the same size and weight as the muted text either side of
+     it, and in the dark theme the accent sits close enough to the body text to
+     disappear. Filled for overdue, outlined for today: the same shape-carries-
+     the-meaning rule the event rules follow, with colour only reinforcing it. */
+  .due-overdue { color: var(--paper); background: var(--accent-strong);
+                 padding: 1px 7px; border-radius: 999px; font-weight: 600; }
+  .due-today { border: 1px solid var(--ink); padding: 0 6px;
+               border-radius: 999px; font-weight: 600; }
+  .due-soon { color: var(--mute); }
+  .card-empty { color: var(--mute); font-style: italic; font-size: 14px; }
+
+  /* Done is a holding pen — it is swept, and nothing in it is waiting on you.
+     It recedes, but NOT via opacity on the column: every card already carries an
+     inline opacity from the age fade, a parent opacity multiplies with it, and a
+     card finished this morning would come out looking like a month-old one.
+     Colour only, which the fade cannot collide with. */
+  .board-col[data-list="done"] h2 { color: var(--faint); }
+  /* Dashed, not a lighter colour: --line is already the lightest rule token
+     there is, and --faint is darker than it in every theme, so tinting the
+     border would make Done louder rather than quieter. Breaking the rule up
+     reads as less finished-looking at the same weight. */
+  .board-col[data-list="done"] .card { border-style: dashed; }
+  .board-col[data-list="done"] .card-title { color: var(--mute); }
+  .board-col[data-list="done"] .card-sub { color: var(--faint); }
+  /* A finished card's due date is history, not a warning — and most of them
+     have one in the past, so without this every second card in Done wears a
+     filled "9 days late" pill in the one column where nothing is late. Undo
+     both pills back to plain text here. */
+  .board-col[data-list="done"] .due-overdue,
+  .board-col[data-list="done"] .due-today {
+    color: inherit; background: none; border-color: transparent;
+    padding: 0; font-weight: inherit; }
+
+  /* The inline card editor is the card's sibling, not its child, so it sits in
+     the column flow directly beneath it in both layouts. The accent edge ties it
+     back to the card it belongs to. */
+  .card-editor { border: 1px solid var(--line); border-left: 3px solid var(--accent-strong);
+                 border-radius: 8px; padding: 10px; margin: -4px 0 10px;
+                 display: flex; flex-direction: column; gap: 8px; }
+  /* .add is borderless by design — it borrows the underline from .addrow, which
+     the editor does not use. Give it its own, same weight, same focus cue. */
+  .card-editor .add { font-size: 15px; padding: 7px 2px;
+                      border-bottom: 1.5px solid var(--line);
+                      transition: border-color 0.15s ease; }
+  .card-editor .add:focus { border-bottom-color: var(--ink); }
+  .card-editor-actions { display: flex; align-items: center; gap: 8px; }
+  .card-del { margin-left: auto; }
+  /* Armed for the confirming second tap — the same cue a pressed pill gets. */
+  .card-del.armed { color: var(--accent-strong); border-color: var(--accent-strong); }
+  /* Two pickers (label, column) share one row, and without help they read as
+     one flat run of seven pills with nothing saying the left half chooses a
+     different kind of thing from the right. Two cues, not one: a wider gap
+     between the groups than inside them… */
+  #addCardOpts { gap: 10px 20px; align-items: flex-start; }
+  /* …and a caption apiece. Deliberately the same micro-type as .board-col h2 —
+     the vocabulary this app already uses for "this names the thing below it".
+     Board-only: the chore pickers each sit in a row that has already said what
+     it is, and gain nothing from a second label. */
+  .seg-group { display: flex; flex-direction: column; }
+  .seg-cap { font: 600 11px var(--display); color: var(--mute);
+             text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 6px; }
+
+  @media (min-width: 900px) {
+    .board-cols { grid-template-columns: repeat(5, 1fr); align-items: start; }
+    /* An empty column was a ~40px sliver — a poor drop target and barely a
+       region at all. This gives every column a floor so the five read as five
+       defined places, and the drop-target outline follows the taller box. */
+    .board-col { min-height: 140px; }
+    /* The editor lives inside a ~230px column here, where the default pills wrap
+       the column picker to four rows and crush the date field beside them. Shave
+       the pills rather than the touch targets on the phone, which are fine. */
+    .card-editor { padding: 9px; gap: 7px; }
+    .card-editor .seg { font-size: 12px; padding: 4px 8px; }
+    .card-editor .seg-row { gap: 6px; }
+    .card-editor .seg-cap { margin-bottom: 4px; }
+    /* Save and Delete stay on one line: the row must not wrap, and neither
+       button may break its own word to make itself fit. */
+    .card-editor-actions { flex-wrap: nowrap; }
+    .card-editor-actions .addbtn, .card-editor-actions .seg { white-space: nowrap; }
+  }
+
   .chores-head { justify-content: flex-start; }
   #choresGroups { padding-top: 24px; }
   .chores-group { margin-top: 28px; }
@@ -394,6 +523,23 @@
   </section>
 </div>
 
+<div id="boardView" hidden>
+  <div class="board-head">
+    <h1 class="day">Board</h1>
+    <div class="seg-row" id="boardFilter"></div>
+  </div>
+  <div class="board-agenda" id="boardAgenda"></div>
+  <div class="board-cols" id="boardColumns"></div>
+  <section>
+    <div class="addrow">
+      <input class="add" id="addCard" placeholder="Add a card" autocomplete="off"
+             enterkeyhint="done" aria-label="Add a card">
+      <button class="addbtn" type="button" id="addCardBtn">Add</button>
+    </div>
+    <div class="seg-row" id="addCardOpts"></div>
+  </section>
+</div>
+
 <button class="switch" id="choresToggle" type="button" aria-label="Switch to chores">
   <svg class="ic-broom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     <path d="M20 4 12 12"/>
@@ -402,6 +548,16 @@
   </svg>
   <svg class="ic-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     <path d="M14 6l-6 6 6 6"/>
+  </svg>
+</button>
+
+<button class="switch board-switch" id="boardToggle" type="button" aria-label="Switch to board" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <rect class="ic-board" x="3.5" y="4" width="4.5" height="16" rx="1"/>
+    <rect class="ic-board" x="9.75" y="4" width="4.5" height="11" rx="1"/>
+    <rect class="ic-board" x="16" y="4" width="4.5" height="7" rx="1"/>
+    <path class="ic-back" d="M15 5l-7 7 7 7"/>
   </svg>
 </button>
 
@@ -430,6 +586,7 @@
 <script src="config.js"></script>
 <script src="feeds.js"></script>
 <script src="chores.js"></script>
+<script src="board.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -19,11 +19,109 @@ var TOKEN_KEY = 'fd.token';
 var THEME_KEY = 'fd.theme';
 var EMOJI_KEY = 'fd.emoji';
 var AWAKE_KEY = 'fd.awake';
+var BOARD_OK_KEY = 'fd.boardok';
 var THEMES = ['paper', 'pastel', 'jewel', 'almanac'];
 
-var state = { shopping: [], todo: [], note: '', events: [], chores: [], fetched: null };
+var state = { shopping: [], todo: [], note: '', events: [], chores: [], board: [], fetched: null };
 var queue = [];
 var who = localStorage.getItem(WHO_KEY) || '';
+
+/**
+ * Whether this device may see the board. The server decides this on every
+ * single request and independently refuses board rows and board ops to any
+ * device outside its allowlist, so this flag is only the UI affordance, never
+ * the security boundary.
+ *
+ * It is remembered per device (same shape as fd.who / fd.theme / fd.awake) so
+ * the icon is present offline and on the very first paint, before any response
+ * arrives. Without that, the board would be unreachable offline even though its
+ * rows sit in the local cache and board.js is in the service-worker shell —
+ * which would defeat the offline-first design. A device whose access has been
+ * revoked shows the icon exactly once more, gets nothing back, and clears the
+ * flag. The kitchen tablet never receives boardAllowed: true at all, so it
+ * never stores it.
+ */
+var boardAllowed = !!localStorage.getItem(BOARD_OK_KEY);
+
+var BOARD_LIST_NAMES = { now: 'Now', week: 'This week', later: 'Later',
+                         someday: 'Someday', done: 'Done' };
+var BOARD_SOURCE_BADGE = { capture: '🎙', vault: '📓' };
+
+/**
+ * Everything a device has to forget once it is off the allowlist: the flag, the
+ * cached rows, the rendered titles, and the view itself. Nothing here is lost
+ * that the server would not hand back if access returned.
+ */
+function tearDownBoard() {
+  boardAllowed = false;
+  localStorage.removeItem(BOARD_OK_KEY);
+  state.board = [];
+  save(CACHE_KEY, state);
+  // A queued cardAdd/cardEdit carries the card's title and note in plaintext.
+  // Once a device can no longer see the board, nothing board-shaped should
+  // still be waiting to leave it in the next flush() — but a shopping, to-do,
+  // note or chore op queued beforehand belongs to the shared family lists and
+  // has nothing to do with the board, so it must survive untouched.
+  queue = queue.filter(function (op) { return op.op.slice(0, 4) !== 'card'; });
+  save(QUEUE_KEY, queue);
+  closeCardEditor();   // the card it points at no longer exists here
+  // The titles are also sitting in the view's DOM, which nothing repaints once
+  // it is hidden — clearing state alone would leave them on the device.
+  var wrap = document.getElementById('boardColumns');
+  if (wrap) wrap.innerHTML = '';
+  // #live is screen-reader-only but still present in the accessibility tree,
+  // and the add-card input can be holding an unsubmitted title — both can be
+  // carrying a card's private text just as surely as the columns just cleared.
+  var live = document.getElementById('live');
+  if (live) live.textContent = '';
+  var addInput = document.getElementById('addCard');
+  if (addInput) addInput.value = '';
+  // Don't strand the device on a view the server will no longer feed.
+  // syncSwitches() takes the icon away on the next render either way, but the
+  // open view has to be closed explicitly.
+  if (boardVisible()) showView('dashboard');
+}
+
+function setBoardAllowed(on) {
+  if (on) { boardAllowed = true; localStorage.setItem(BOARD_OK_KEY, '1'); return; }
+  // Every device that is not on the allowlist takes this branch on every poll
+  // for as long as it is switched on — the kitchen tablet, forever, every
+  // 8-60s. Bail before touching localStorage unless there is something left to
+  // forget. The condition is "is anything still here", not "was it true a
+  // moment ago", so the first false on a device that never stored the flag
+  // still wipes rows that are somehow cached.
+  if (!boardAllowed && !localStorage.getItem(BOARD_OK_KEY) &&
+      !state.board.length && !boardVisible()) return;
+  tearDownBoard();
+}
+
+/**
+ * A revoked token is the one failure that carries meaning: the server has
+ * stopped trusting this device. Three in a row — never one, so a redeploy, a
+ * quota blip, or a single odd response cannot wipe anything — and the private
+ * rows come off the device.
+ *
+ * Be clear about what this buys: it wipes a lost or stolen phone that is ONLINE
+ * and still running the app. A device that stays offline keeps its rows, a
+ * device that is never opened again keeps its rows, and this is in no sense a
+ * remote wipe. It shortens the window; it does not close it. The count is
+ * per-session and resets on reload, which is fine — the app polls every 8-60s,
+ * so three strikes land within a couple of minutes of the app being open.
+ */
+var BOARD_TOKEN_STRIKES = 3;
+var tokenStrikes = 0;
+
+function noteResponse(res) {
+  if (res && res.ok) { tokenStrikes = 0; return; }
+  // Only an outright token rejection counts. Anything else the server can say,
+  // and anything that never reached it at all (those land in .catch and never
+  // get here, so they neither add a strike nor clear one), must leave the
+  // device's data alone.
+  if (!res || !/bad token/i.test(String(res.error || ''))) return;
+  if (++tokenStrikes < BOARD_TOKEN_STRIKES) return;
+  tokenStrikes = 0;
+  tearDownBoard();
+}
 
 function load(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) || fallback; }
@@ -294,6 +392,7 @@ function flush() {
 
   post({ ops: sending })
     .then(function (res) {
+      noteResponse(res);
       if (!res.ok) throw new Error(res.error);
       queue = queue.slice(sending.length);
       save(QUEUE_KEY, queue);
@@ -315,6 +414,10 @@ function adopt(data) {
   state.note = data.note || '';
   state.events = data.events || [];
   state.chores = data.chores || [];
+  // Board rows ride their own request, so most responses legitimately omit
+  // them. Replacing state.board with [] here would blank the view every poll.
+  if (data.board) state.board = data.board;
+  if (typeof data.boardAllowed === 'boolean') setBoardAllowed(data.boardAllowed);
   state.fetched = new Date().toISOString();
   // A change from the other device counts as activity: whoever is watching is
   // probably mid-conversation about it, so stay on the fast poll for a bit.
@@ -337,9 +440,40 @@ function refresh() {
   post({ action: 'data' })
     // Skip while writes are queued: the server has not seen them yet, so
     // adopting its state here would visibly undo what was just typed.
-    .then(function (res) { if (res.ok && !queue.length) adopt(res.data); })
+    .then(function (res) { noteResponse(res); if (res.ok && !queue.length) adopt(res.data); })
     .catch(function () {})
     .then(function () { refreshing = false; });
+}
+
+/**
+ * Board rows are private, so they are NOT part of the payload every family
+ * device polls. They are asked for explicitly, and only while the board is on
+ * screen — a phone showing the dashboard never requests them at all.
+ */
+var refreshingBoard = false;
+function refreshBoard() {
+  if (refreshingBoard || !navigator.onLine || !configured()) return;
+  refreshingBoard = true;
+  post({ action: 'data', wantBoard: true })
+    .then(function (res) { noteResponse(res); if (res.ok && !queue.length) adopt(res.data); })
+    .catch(function () {})
+    .then(function () { refreshingBoard = false; });
+}
+
+function boardVisible() {
+  var el = document.getElementById('boardView');
+  return !!el && !el.hidden;
+}
+
+/**
+ * One request, aimed at whatever is on screen. The board response carries the
+ * whole dashboard payload as well, so asking for both would only spend a second
+ * call on data we already have — and the Apps Script quota is shared by the
+ * whole family. Every trigger (first load, reconnect, poll tick) comes through
+ * here so none of them can drift apart.
+ */
+function refreshVisible() {
+  if (boardVisible()) refreshBoard(); else refresh();
 }
 
 /* ---------- polling ---------- */
@@ -371,7 +505,9 @@ function pollDelay() {
 function pollLoop() {
   clearTimeout(pollTimer);
   if (!document.hidden) {
-    refresh();
+    // The visible view decides what gets fetched: the private rows are only
+    // ever requested while someone is actually looking at the board.
+    refreshVisible();
     FEEDS.refreshIfStale(render);            // feeds own their own, much slower cadence
   }
   render();                                  // keeps the "2m ago" stamp honest
@@ -431,6 +567,17 @@ function renderList(el, list, items) {
     };
     el.appendChild(li);
   });
+}
+
+/**
+ * The events for one day bucket. The backend emits exactly 'today' or
+ * 'tomorrow' today, so matching the day by name is equivalent to "everything
+ * that isn't tomorrow" right now — but only the positive test stays correct if
+ * a third bucket is ever added, and having one definition means the dashboard
+ * and the board's agenda line cannot drift apart.
+ */
+function eventsOn(day) {
+  return (state.events || []).filter(function (ev) { return ev.day === day; });
 }
 
 /**
@@ -507,6 +654,10 @@ function renderArc(dow) {
 }
 
 function render() {
+  // Both corner icons are derived in one place, so a poll-driven render lands
+  // on exactly the same answer showView() just produced instead of fighting it.
+  syncSwitches();
+
   var view = FEEDS.view();
 
   document.getElementById('day').textContent = view.day;
@@ -517,9 +668,8 @@ function render() {
 
   // Events come from the authenticated backend, not from FEEDS, so they live
   // in state alongside the lists and survive offline the same way.
-  var events = state.events || [];
-  var todayEvents = events.filter(function (e) { return e.day !== 'tomorrow'; });
-  var tomorrowEvents = events.filter(function (e) { return e.day === 'tomorrow'; });
+  var todayEvents = eventsOn('today');
+  var tomorrowEvents = eventsOn('tomorrow');
 
   var today = document.getElementById('today');
   today.innerHTML = '';
@@ -603,6 +753,7 @@ function render() {
     : '';
 
   if (!document.getElementById('choresView').hidden) renderChores();
+  if (boardVisible()) renderBoard();
 }
 
 /* ---------- self-update ---------- */
@@ -981,32 +1132,1041 @@ function wireChoreAdd() {
   if (defInput) defInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
 }
 
-/* ---------- view switch (dashboard <-> chores) ---------- */
+/* ---------- board view ---------- */
+
+/** Which labels are on screen. Not synced — it is a way of looking, not data. */
+var boardFilter = 'all';
+
+// What the add-card control is currently set to. Held here rather than read off
+// the pills so the pills stay presentation, the way choreChoice does it.
+var addCardLabel = 'personal';
+var addCardList = 'now';
+
+/**
+ * The card whose inline editor is open, or null.
+ *
+ * This has to live outside the DOM because renderBoard() rebuilds #boardColumns
+ * wholesale on every poll tick (8-60s) and the editor sits inside a column. The
+ * input guard below only defers the rebuild while a text field in there has
+ * focus, so an editor whose focus is on a pill — or nowhere, because the user
+ * paused — would silently vanish mid-interaction. Instead the rebuild carries it
+ * across: which card (editingId), what its fields hold but have not saved
+ * (editDraft), and which control had focus (captured per-rebuild below).
+ */
+var editingId = null;
+var editDraft = null;
+var openEditorFocus = null;   // one-shot: control to focus on the next rebuild
+var focusCardId = null;       // one-shot: card to focus on the next rebuild
+// Whose Delete is armed for its confirming second tap. Module-level for the
+// same reason editingId is: pollLoop calls render() — and so renderBoard() —
+// every 8s at the fast cadence, so a flag living in the button's closure would
+// silently revert to "Delete" a second or two after it was armed, and the
+// second tap would arm it again instead of deleting.
+var deleteArmedId = null;
+
+/** Forget the open editor. Its box goes on the next renderBoard(). */
+function closeCardEditor() {
+  editingId = null;
+  editDraft = null;
+  openEditorFocus = null;
+  deleteArmedId = null;
+}
+
+/**
+ * Release a focused text field inside the columns before anything that will
+ * rebuild them.
+ *
+ * renderBoard's input guard defers the ENTIRE rebuild while a field in there
+ * has focus. That is right for a poll tick and wrong for a write the user just
+ * asked for: the write lands in state, the cache and the queue, but the screen
+ * keeps the old card and an orphaned editor — and every later tick hits the
+ * same guard, so the board stops repainting until something blurs the field.
+ *
+ * Enter never moves focus at all, and only Chrome moves it to a button on
+ * click, so every path that writes from inside the editor has to do this for
+ * itself. One helper, called from all of them, so they cannot drift apart.
+ */
+function blurBoardField() {
+  var wrap = document.getElementById('boardColumns');
+  var ae = document.activeElement;
+  if (wrap && ae && wrap.contains(ae) && /^(INPUT|TEXTAREA)$/.test(ae.tagName)) ae.blur();
+}
+
+/**
+ * The five horizon columns, rebuilt from state. Everything about a card —
+ * which column, how urgent its date, how faded it has gone — is recomputed
+ * locally by board.js, so the view is identical offline.
+ */
+function renderBoard() {
+  var wrap = document.getElementById('boardColumns');
+  if (!wrap) return;
+  // Outside the guard below: the agenda is a one-line readout of data that is
+  // already here, and freezing it because a card input has focus would leave a
+  // stale time on screen for as long as someone is typing.
+  renderBoardAgenda();
+
+  // A poll must not destroy a drag in progress. This rebuild replaces the node
+  // under the pointer AND every drop target with it, so the gesture would die
+  // mid-air — and unlike the editor below, there is no way to carry a drag
+  // across a rebuild. Defer instead; dragend repaints (and dragActive lets go
+  // by itself if a drag ever fails to end).
+  if (dragActive()) return;
+
+  // A poll must not wipe a half-typed card. Same guard renderChores uses.
+  if (wrap.contains(document.activeElement) &&
+      /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+
+  // Cards are focusable, and a click focuses one, so deferring the rebuild
+  // while a card has focus (the way the input guard does) would freeze the
+  // board for as long as it stayed focused. Rebuild, then put focus back on the
+  // same card instead — Task 9's keyboard moves depend on it surviving a poll.
+  var active = document.activeElement;
+  var focusedId = (active && active.classList && active.classList.contains('card') &&
+                   wrap.contains(active)) ? active.dataset.id : null;
+
+  // Carry the open editor across the rebuild: its unsaved field values and
+  // whichever of its controls had focus. Harvested only when the box on screen
+  // still belongs to editingId, so switching cards can't resurrect the previous
+  // card's draft into the new editor.
+  var openBox = wrap.querySelector('.card-editor');
+  var editorCtl = null;
+  editDraft = null;
+  if (openBox && openBox.dataset.card === editingId) {
+    editDraft = readCardEditor(openBox);
+    if (active && openBox.contains(active) && active.dataset.ctl) editorCtl = active.dataset.ctl;
+  }
+  // A just-opened editor asks for the title; a surviving one asks for whatever
+  // it had. Either way it is consumed by this rebuild and not the next.
+  var wantCtl = editorCtl || openEditorFocus;
+  openEditorFocus = null;
+  // A closing editor hands focus back to its card. Same one-shot discipline.
+  var wantCard = focusCardId;
+  focusCardId = null;
+
+  var now = new Date().toISOString();
+  // The filter is a view over state, never a filter on what gets written:
+  // positions and neighbours are always computed from the whole board.
+  var visible = boardFilter === 'all' ? state.board
+    : state.board.filter(function (c) { return c.label === boardFilter; });
+  var groups = BOARD.group(visible);
+  wrap.innerHTML = '';
+
+  BOARD.LISTS.forEach(function (listName) {
+    var col = document.createElement('div');
+    col.className = 'board-col';
+    col.dataset.list = listName;
+    wireColumnDrop(col, listName);
+
+    var h = document.createElement('h2');
+    h.textContent = BOARD_LIST_NAMES[listName];
+    col.appendChild(h);
+
+    var cards = groups[listName];
+    if (!cards.length) {
+      var empty = document.createElement('div');
+      empty.className = 'card-empty';
+      empty.textContent = '—';
+      col.appendChild(empty);
+    }
+    cards.forEach(function (card) { col.appendChild(cardEl(card, now, listName)); });
+    wrap.appendChild(col);
+  });
+
+  // Matched by id rather than by a built selector: card ids come from the
+  // sheet, and nothing guarantees they are safe to interpolate into one.
+  var cards = wrap.querySelectorAll('.card');
+  var focusEl = null;
+  var editEl = null;
+  var wantCardEl = null;
+  for (var i = 0; i < cards.length; i++) {
+    if (focusedId && cards[i].dataset.id === focusedId) focusEl = cards[i];
+    if (editingId && cards[i].dataset.id === editingId) editEl = cards[i];
+    if (wantCard && cards[i].dataset.id === wantCard) wantCardEl = cards[i];
+  }
+
+  // The card being edited can go out from under the editor: deleted on the
+  // other device, or filtered off screen. Don't keep pointing at it.
+  var editing = editEl && findCard(editingId);
+  if (editingId && !editing) closeCardEditor();
+  if (editing) openCardEditor(editEl, editing, wantCtl);
+  // However the editor closed, focus lands back on the card it belonged to —
+  // otherwise Save and a column move drop it on <body> while a re-tap does not.
+  if (wantCardEl) wantCardEl.focus();
+  // If the editor just took focus, don't yank it back to the card behind it.
+  else if (focusEl && !wantCtl) focusEl.focus();
+}
+
+/**
+ * One card. Faded in proportion to how long it has sat untouched.
+ *
+ * `listName` is the column it is being drawn in, which is what a drop onto it
+ * means — see wireCardDrag.
+ */
+function cardEl(card, nowIso, listName) {
+  var el = document.createElement('article');
+  el.className = 'card';
+  el.dataset.id = card.id;
+  el.tabIndex = 0;
+  // It opens an editor when activated, so announce it as the control it is —
+  // same treatment choreRow gives its rows. No aria-label: the card's own text
+  // (title, date, label) is a better name than anything we would write.
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-expanded', String(editingId === card.id));
+  el.style.opacity = String(1 - 0.45 * BOARD.ageLevel(card, nowIso));
+
+  var title = document.createElement('div');
+  title.className = 'card-title';
+  title.textContent = card.title;
+  el.appendChild(title);
+
+  // The meta line reads: due date, then label, then note. The date goes first
+  // because it is what the eye actually scans a column for.
+  //
+  // The label is drawn ONLY under the 'All' filter. Filtered to one label, the
+  // pills at the top of the view already say which one you are looking at, so
+  // the word on every single card is pure repetition. It is never colour-coded:
+  // this app tells things apart by shape, never by hue.
+  var bits = [];
+  if (card.label && boardFilter === 'all') bits.push(card.label);
+  if (card.note) bits.push(card.note);
+
+  var sub = document.createElement('div');
+  sub.className = 'card-sub';
+
+  var badge = BOARD_SOURCE_BADGE[card.source];
+  if (badge) {
+    var b = document.createElement('span');
+    b.className = 'card-badge';
+    b.textContent = badge;
+    b.title = card.source === 'capture' ? 'From a voice capture' : 'From the vault';
+    sub.appendChild(b);
+  }
+
+  var dueText = BOARD.dueLabel(card.due, nowIso);
+  if (dueText) {
+    var d = document.createElement('span');
+    d.className = 'due-' + BOARD.dueState(card, nowIso);
+    d.textContent = dueText;
+    // 'Thu' and '20 Aug' are easier to read but carry less than the date did —
+    // no year, no which-Thursday. The exact date stays one hover away rather
+    // than being thrown out. Sliced the same way the editor's date field is.
+    d.title = String(card.due).slice(0, 10);
+    sub.appendChild(d);
+    if (bits.length) sub.appendChild(document.createTextNode(' · '));
+  }
+  sub.appendChild(document.createTextNode(bits.join(' · ')));
+
+  if (sub.childNodes.length) el.appendChild(sub);
+
+  // The editor is inserted as the card's sibling, not its child, so nothing it
+  // contains bubbles back through here — no stopPropagation needed, unlike the
+  // chore rows.
+  el.addEventListener('click', function () { toggleCardEditor(card); });
+  el.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggleCardEditor(card); }
+  });
+
+  // Deliberately NOT closing the editor on a drag, which is why closeCardEditor
+  // was kept out of moveCard. The column picker closes it because on a phone the
+  // card lands somewhere off screen and the box would be left pointing at
+  // nothing; a drag is a wide-screen gesture where all five columns are visible
+  // at once, and renderBoard re-anchors the editor to its card by id wherever it
+  // ends up — carrying the unsaved draft with it. Throwing away someone's typing
+  // because they dragged a different card would be worse than either.
+  wireCardDrag(el, card, listName);
+  return el;
+}
+
+/** Today's events, already in the payload — free context beside the cards. */
+function renderBoardAgenda() {
+  var el = document.getElementById('boardAgenda');
+  if (!el) return;
+  var today = eventsOn('today');
+  el.textContent = today.length
+    ? 'Today: ' + today.map(function (ev) { return ev.when + ' ' + ev.what; }).join('  ·  ')
+    : '';
+}
+
+/* ---------- board writes ---------- */
+
+/**
+ * Every one of these applies locally, saves, and queues — the same optimistic
+ * path the lists and chores use, so the board works with no signal. None of
+ * them calls renderBoard(): enqueue() runs render(), which repaints the board
+ * when it is the visible view. That is exactly how addChore/editChore work, and
+ * doing both would rebuild the columns (and the open editor) twice per write.
+ *
+ * All four bail on a device that may not see the board. The server refuses
+ * board ops from any device outside its allowlist regardless — this only stops
+ * the client from queueing an op that could never land, and from touching
+ * private rows on a device that should not hold them.
+ */
+function findCard(id) {
+  for (var i = 0; i < state.board.length; i++) {
+    if (state.board[i].id === id) return state.board[i];
+  }
+  return null;
+}
+
+/**
+ * The position for a card appended to the end of `list`. Read off the whole
+ * board, never the filtered view. `0` is a legitimate position ("before the
+ * first card"), so the neighbour is tested for length, never truthiness.
+ */
+function endPos(list) {
+  var inList = BOARD.group(state.board)[list];
+  var last = inList.length ? inList[inList.length - 1].pos : null;
+  return BOARD.posBetween(last, null);
+}
+
+function addCard(title) {
+  if (!boardAllowed) return;
+  title = (title || '').trim();
+  if (!title) return;
+  var id = uuid();
+  var now = new Date().toISOString();
+  var card = {
+    id: id, title: title, note: '', list: addCardList, pos: endPos(addCardList),
+    label: addCardLabel, due: '', source: 'manual', source_ref: '',
+    created_at: now, updated_at: now,
+    // Matches what cardAdd_ writes for a card added straight into Done, so the
+    // local row does not disagree with the sheet until the next fetch.
+    done_at: addCardList === 'done' ? now : ''
+  };
+  state.board.push(card);
+  save(CACHE_KEY, state);
+  announce(title + ' added to ' + BOARD_LIST_NAMES[card.list]);
+  enqueue({ op: 'cardAdd', id: id, title: title, list: card.list, pos: card.pos,
+            label: card.label, due: '', note: '', source: 'manual', source_ref: '' });
+}
+
+/** Only the fields passed are changed, and only those are sent. */
+function editCard(id, fields) {
+  if (!boardAllowed) return;
+  var card = findCard(id);
+  if (!card) return;
+  var op = { op: 'cardEdit', id: id };
+  Object.keys(fields).forEach(function (k) {
+    card[k] = fields[k];
+    op[k] = fields[k];
+  });
+  card.updated_at = new Date().toISOString();
+  save(CACHE_KEY, state);
+  enqueue(op);
+}
+
+/**
+ * Move between columns and/or reorder. There is deliberately no cardDone op:
+ * landing in 'done' is what completes a card, and moving back out clears the
+ * stamp again — mirroring cardMove_ so the local row matches the sheet.
+ */
+function moveCard(id, list, pos) {
+  if (!boardAllowed) return;
+  var card = findCard(id);
+  if (!card) return;
+  card.list = list;
+  card.pos = pos;
+  card.updated_at = new Date().toISOString();
+  card.done_at = list === 'done' ? card.updated_at : '';
+  save(CACHE_KEY, state);
+  enqueue({ op: 'cardMove', id: id, list: list, pos: pos });
+}
+
+/**
+ * Where a card dropped above `beforeId` in `listName` should sit; a null
+ * beforeId means "at the end". Read off the whole board rather than the
+ * filtered view, for the same reason endPos is: a hidden card is still a
+ * neighbour. `0` is a legitimate position, so neighbours are tested for
+ * existence, never for truthiness — posBetween does the rest.
+ */
+function dropPosition(listName, beforeId) {
+  var cards = BOARD.group(state.board)[listName];
+  if (!beforeId) {
+    return BOARD.posBetween(cards.length ? cards[cards.length - 1].pos : null, null);
+  }
+  for (var i = 0; i < cards.length; i++) {
+    if (cards[i].id === beforeId) {
+      return BOARD.posBetween(i > 0 ? cards[i - 1].pos : null, cards[i].pos);
+    }
+  }
+  // The card dropped onto has gone (deleted on the other device between the
+  // rebuild and the drop). Landing at the end beats throwing the drop away.
+  return BOARD.posBetween(cards.length ? cards[cards.length - 1].pos : null, null);
+}
+
+/**
+ * Respace a list whose positions have closed up. Midpoint insertion halves the
+ * gap every time, so repeated drops into the same place eventually run out of
+ * room; board.js decides when, this writes the answer back.
+ *
+ * Only the rows that actually move are written. An op for a card already
+ * sitting on its fresh position would spend an Apps Script call from a quota
+ * the whole family shares, and bump its updated_at — which resets the age fade
+ * on a card nobody touched, and that fade is the point of the aging.
+ */
+function renormalizeList(listName) {
+  if (!boardAllowed) return;
+  var cards = BOARD.group(state.board)[listName];
+  if (!BOARD.needsRenormalize(cards.map(function (c) { return c.pos; }))) return;
+  var fresh = BOARD.renormalize(cards.length);
+  var ops = [];
+  cards.forEach(function (card, i) {
+    if (card.pos === fresh[i]) return;
+    card.pos = fresh[i];
+    // cardMove_ stamps updated_at on the server whatever the op carries, so the
+    // local row has to agree or the next fetch would visibly jump the fade.
+    card.updated_at = new Date().toISOString();
+    // No `list`: cardMove_ writes only the fields an op carries, so a pos-only
+    // move leaves the column — and the done_at stamp that goes with it — alone.
+    ops.push({ op: 'cardMove', id: card.id, pos: fresh[i] });
+  });
+  if (!ops.length) return;
+  save(CACHE_KEY, state);
+  ops.forEach(function (op) { enqueue(op); });
+}
+
+function deleteCard(id) {
+  if (!boardAllowed) return;
+  var card = findCard(id);
+  if (!card) return;
+  if (editingId === id) closeCardEditor();   // nothing left to edit
+  state.board = state.board.filter(function (c) { return c.id !== id; });
+  save(CACHE_KEY, state);
+  announce(card.title + ' deleted');
+  enqueue({ op: 'cardDelete', id: id });
+}
+
+/* ---------- board drag and drop (wide screens only) ---------- */
+
+/**
+ * Dragging is a laptop shortcut, never the only route: the card editor's column
+ * picker does everything a drag does, which is what makes the phone layout —
+ * one stacked column, nothing draggable — work at all. Below 900px this whole
+ * section stays unwired.
+ *
+ * The card being dragged, when it started, and the column currently outlined as
+ * its destination. All three live out here rather than in a handler's closure
+ * because renderBoard() rebuilds #boardColumns wholesale on every poll tick: a
+ * drag outlives any element it began on.
+ */
+var draggingId = null;
+var dragStartedAt = 0;
+var dropCol = null;
+
+/**
+ * How long a drag may hold off the rebuild before the hold is assumed stuck.
+ *
+ * dragend is specified to fire however a drag ends — dropped on nothing,
+ * cancelled with Escape, the window taken away mid-gesture — and it does, which
+ * is what normally clears this. But the cost of the two failures is wildly
+ * asymmetric: a flag stuck on freezes the board for the rest of the session,
+ * while an expiry that fires under a genuinely slow drag costs one drag the
+ * user can simply repeat. So it expires too. Half a minute is far longer than
+ * any real drag and far shorter than "never repaints again".
+ */
+var DRAG_MAX_MS = 30000;
+
+/** True while a drag is in flight — and self-clearing if one never ended. */
+function dragActive() {
+  if (!draggingId) return false;
+  if (Date.now() - dragStartedAt < DRAG_MAX_MS) return true;
+  endDrag();
+  return false;
+}
+
+/** Forget the drag and take every visual trace of it off screen. */
+function endDrag() {
+  draggingId = null;
+  dragStartedAt = 0;
+  setDropCol(null);
+  // Found by query rather than kept in a closure: after the expiry above, the
+  // element the drag started on may already have been rebuilt away.
+  var wrap = document.getElementById('boardColumns');
+  if (!wrap) return;
+  var lit = wrap.querySelectorAll('.card.dragging');
+  for (var i = 0; i < lit.length; i++) lit[i].classList.remove('dragging');
+}
+
+/** Outline exactly one column as the destination, or none. */
+function setDropCol(col) {
+  if (dropCol === col) return;
+  if (dropCol) dropCol.classList.remove('drop-target');
+  dropCol = col;
+  if (dropCol) dropCol.classList.add('drop-target');
+}
+
+/**
+ * Land the dragged card in `listName`, above `beforeId` — null meaning at the
+ * end. Both drop paths (onto a card, onto a column) come through here so the
+ * blur, the position, the respace and the repaint cannot drift apart.
+ */
+function dropCard(listName, beforeId) {
+  var id = draggingId;
+  // Before the write, not after: the rebuild the write triggers is the repaint,
+  // and it must not be deferred by a drag it has already finished.
+  endDrag();
+  if (!id) return;
+  // The seventh caller of this, and for the usual reason: renderBoard defers
+  // the ENTIRE rebuild while a field in the columns has focus, so the move
+  // would land in state, the cache and the queue and never appear on screen.
+  // A mousedown on a card normally focuses the card and blurs the field for
+  // us — but "normally" is not a guarantee across browsers, and this costs
+  // nothing when there was nothing focused.
+  blurBoardField();
+  moveCard(id, listName, dropPosition(listName, beforeId));
+  renormalizeList(listName);
+  // No renderBoard() here: moveCard enqueues, enqueue() renders, and so does
+  // every op renormalizeList adds. Calling it as well would rebuild the columns
+  // (and the open editor) twice for one drop — see the board writes above.
+}
+
+/**
+ * Make one card draggable, and a landing place for the others.
+ *
+ * The breakpoint is re-read here rather than latched at startup, and this runs
+ * per card on every rebuild — so a window dragged across 900px corrects itself
+ * on the next repaint (a poll tick at worst) instead of needing a reload.
+ *
+ * `listName` is the column the card is drawn in, not card.list: group() files a
+ * card with an unrecognised list under 'later', and what the user is dropping
+ * into is the column they can see.
+ */
+function wireCardDrag(el, card, listName) {
+  if (!window.matchMedia || !window.matchMedia('(min-width: 900px)').matches) return;
+  el.draggable = true;
+
+  el.addEventListener('dragstart', function (ev) {
+    endDrag();                     // anything a previous drag left behind
+    draggingId = card.id;
+    dragStartedAt = Date.now();
+    el.classList.add('dragging');
+    if (!ev.dataTransfer) return;
+    // Firefox starts no drag at all unless the transfer carries something.
+    try { ev.dataTransfer.setData('text/plain', card.id); } catch (e) {}
+    ev.dataTransfer.effectAllowed = 'move';
+  });
+
+  el.addEventListener('dragend', function () {
+    // draggingId is still set only if the drag ended WITHOUT a drop — dropCard
+    // clears it first — so a completed drop does not rebuild the columns a
+    // second time. A cancelled one does need the repaint: every poll tick since
+    // dragstart was deferred, and the board may be showing stale rows.
+    var cancelled = !!draggingId;
+    endDrag();
+    if (cancelled) renderBoard();
+  });
+
+  // Dropping onto a card means "above this one". Only `drop` is handled here;
+  // dragover is deliberately left to bubble to the column, which is what keeps
+  // the column outlined while the pointer is over the cards inside it.
+  el.addEventListener('drop', function (ev) {
+    if (!draggingId) return;              // someone else's drag: not ours to eat
+    ev.preventDefault();
+    ev.stopPropagation();                 // this card is the target, not the column
+    // Dropped on itself. The event is still consumed — letting it reach the
+    // column would append the card to the end of its own list, which is not
+    // "nothing" by any reading of the gesture. dragend does the cleanup.
+    if (draggingId === card.id) return;
+    dropCard(listName, card.id);
+  });
+}
+
+/** A whole column as a landing place: dropping on it appends to the end. */
+function wireColumnDrop(col, listName) {
+  if (!window.matchMedia || !window.matchMedia('(min-width: 900px)').matches) return;
+
+  // Some engines decide droppability on dragenter as well as dragover. Both,
+  // and only while one of our own cards is in flight — a file or a selection
+  // dragged in from elsewhere is not something this board accepts.
+  col.addEventListener('dragenter', function (ev) {
+    if (!draggingId) return;
+    ev.preventDefault();
+  });
+  col.addEventListener('dragover', function (ev) {
+    if (!draggingId) return;
+    // This preventDefault is what makes the column a drop site — and the cards
+    // inside it too, since their dragover bubbles up to here.
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+    setDropCol(col);
+  });
+  col.addEventListener('drop', function (ev) {
+    if (!draggingId) return;
+    ev.preventDefault();
+    dropCard(listName, null);
+  });
+}
+
+/**
+ * The outline goes on from dragover and comes off when the drag leaves the
+ * columns altogether.
+ *
+ * Wired once, on the container renderBoard empties rather than replaces, so it
+ * survives every rebuild. On dragleave, relatedTarget is the element being
+ * entered: moving between two columns, or from a column onto a card inside it,
+ * must not clear an outline the very next dragover would put straight back —
+ * that reads as a flicker. When it is null (the pointer left the window)
+ * contains() says false, which is exactly the right answer.
+ */
+function wireBoardDrag() {
+  var wrap = document.getElementById('boardColumns');
+  if (!wrap) return;
+  wrap.addEventListener('dragleave', function (ev) {
+    if (!draggingId) return;
+    if (wrap.contains(ev.relatedTarget)) return;
+    setDropCol(null);
+  });
+}
+
+/* ---------- board card editor ---------- */
+
+var LIST_OPTIONS = [
+  { value: 'now', label: 'Now' }, { value: 'week', label: 'This week' },
+  { value: 'later', label: 'Later' }, { value: 'someday', label: 'Someday' },
+  { value: 'done', label: 'Done' }
+];
+var LABEL_OPTIONS = [
+  { value: 'personal', label: 'Personal' }, { value: 'school', label: 'School' }
+];
+var FILTER_OPTIONS = [{ value: 'all', label: 'All' }].concat(LABEL_OPTIONS);
+
+/**
+ * A row of segmented pills, one pressed — the picker wireChoreAdd and
+ * choreEditor each build by hand, generalised. Pressed state is updated in
+ * place rather than by redrawing the row, so picking one does not throw away
+ * the button under the pointer (or the keyboard focus on it).
+ *
+ * `ctl`, when given, prefixes a data-ctl tag on each button so the editor's
+ * focus can be restored across a rebuild.
+ */
+function segRow(options, current, onPick, ctl) {
+  var row = document.createElement('div');
+  row.className = 'seg-row';
+  var btns = [];
+  options.forEach(function (opt) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'seg';
+    b.textContent = opt.label;
+    if (ctl) b.dataset.ctl = ctl + opt.value;
+    b.setAttribute('aria-pressed', String(opt.value === current));
+    b.addEventListener('click', function () {
+      btns.forEach(function (o) {
+        o.el.setAttribute('aria-pressed', String(o.value === opt.value));
+      });
+      onPick(opt.value);
+    });
+    row.appendChild(b);
+    btns.push({ el: b, value: opt.value });
+  });
+  return row;
+}
+
+/**
+ * A captioned picker: `row` under a small heading in the same micro-type the
+ * column headers use.
+ *
+ * The board stacks two pickers that choose different things — a label and a
+ * column — and without a caption apiece they read as one flat run of seven
+ * pills with no hint that picking from the left half means something different
+ * from picking from the right. The chore pickers deliberately do NOT use this:
+ * each of those sits in a row that has already said what it is.
+ *
+ * role=group + aria-label rather than aria-labelledby, so nothing here has to
+ * mint a unique id — the board never builds a selector out of a value either.
+ */
+function segGroup(caption, row) {
+  var g = document.createElement('div');
+  g.className = 'seg-group';
+  g.setAttribute('role', 'group');
+  g.setAttribute('aria-label', caption);
+  var cap = document.createElement('div');
+  cap.className = 'seg-cap';
+  cap.textContent = caption;
+  cap.setAttribute('aria-hidden', 'true');   // the group's own name already says it
+  g.appendChild(cap);
+  g.appendChild(row);
+  return g;
+}
+
+/**
+ * The control inside `box` carrying this data-ctl key. Walked rather than
+ * selected — the keys here are our own constants and would be safe either way,
+ * but the board deliberately never builds a selector out of a value.
+ */
+function ctlIn(box, key) {
+  var els = box.querySelectorAll('[data-ctl]');
+  for (var i = 0; i < els.length; i++) if (els[i].dataset.ctl === key) return els[i];
+  return null;
+}
+
+/** What the editor's text fields hold right now, saved or not. */
+function readCardEditor(box) {
+  var out = {};
+  ['title', 'note', 'due'].forEach(function (k) {
+    var el = ctlIn(box, k);
+    if (el) out[k] = el.value;
+  });
+  return out;
+}
+
+/**
+ * `box`'s text fields, shaped as a cardEdit payload, but only the ones that
+ * actually differ from `card` — empty when nothing was touched, for the same
+ * reason openCardEditor's commit() cares: a no-op write costs an Apps Script
+ * call and bumps updated_at for nothing. Pulled out to module level, rather
+ * than left as a closure inside openCardEditor, so the filter pill — which
+ * sits outside that closure, in wireBoardControls — can commit a card's
+ * unsaved typing before its own click hides it, the same way the label pill
+ * already does from inside the editor.
+ */
+function changedCardFields(card, box) {
+  var out = {};
+  var t = ctlIn(box, 'title');
+  var n = ctlIn(box, 'note');
+  var d = ctlIn(box, 'due');
+  var tVal = (t ? t.value.trim() : '') || card.title;
+  if (tVal !== card.title) out.title = tVal;
+  if (n && n.value !== (card.note || '')) out.note = n.value;
+  if (d && d.value !== String(card.due || '').slice(0, 10)) out.due = d.value;
+  return out;
+}
+
+function editField(ctl, label, value, type, placeholder) {
+  var el = document.createElement('input');
+  el.className = 'add';
+  el.dataset.ctl = ctl;
+  if (type) el.type = type;
+  el.value = value || '';
+  if (placeholder) el.placeholder = placeholder;
+  el.setAttribute('autocomplete', 'off');
+  el.setAttribute('aria-label', label);
+  return el;
+}
+
+/** Open a card's editor, or close it if it is the one already open. */
+function toggleCardEditor(card) {
+  // Tapping a card ends any typing in the editor above it — without this the
+  // rebuild is deferred and the tap appears to do nothing at all.
+  blurBoardField();
+  if (editingId === card.id) { closeCardEditor(); focusCardId = card.id; }
+  else {
+    editingId = card.id;
+    editDraft = null;
+    deleteArmedId = null;    // a Delete armed on the card we just left
+    openEditorFocus = 'title';
+  }
+  renderBoard();
+}
+
+/**
+ * One editor for both layouts, inserted as the card's sibling. On a phone this
+ * is the only way to move a card; on a laptop it is the accessible equivalent
+ * of dragging.
+ *
+ * Called only from renderBoard(), which owns editingId — so there is exactly
+ * one of these on screen and it is always anchored to the right card, whatever
+ * a poll tick does to the columns underneath it.
+ */
+function openCardEditor(anchor, card, focusCtl) {
+  var box = document.createElement('div');
+  box.className = 'card-editor';
+  box.dataset.card = card.id;
+  var draft = editDraft || {};
+
+  var title = editField('title', 'Card title',
+                        draft.title != null ? draft.title : card.title);
+  var note = editField('note', 'Description',
+                       draft.note != null ? draft.note : card.note, null, 'Description');
+  // A date input silently rejects anything that is not YYYY-MM-DD. The backend
+  // normalises due dates on read, but a feed can put a full timestamp in the
+  // sheet, so slice here too rather than let the field come up empty and then
+  // save that emptiness over a real date.
+  var due = editField('due', 'Due date',
+                      String(draft.due != null ? draft.due : (card.due || '')).slice(0, 10),
+                      'date');
+  box.appendChild(title);
+  box.appendChild(note);
+  box.appendChild(due);
+
+  /**
+   * Only the text fields that actually differ from the card, shaped as a
+   * cardEdit payload. Empty when nothing was touched — Save then queues
+   * nothing, because a no-op write costs an Apps Script call from a quota the
+   * whole family shares AND bumps updated_at, which would reset the age fade on
+   * a card nobody edited. That fade is the whole point of the aging.
+   */
+  function changedFields() { return changedCardFields(card, box); }
+
+  function commit() {
+    // Enter does not move focus, so without this the rebuild below is deferred
+    // by renderBoard's input guard and the write lands invisibly.
+    blurBoardField();
+    var fields = changedFields();
+    // Close first: editCard queues, which renders, which is what takes the box
+    // off screen. Doing it the other way round would just reopen it.
+    closeCardEditor();
+    focusCardId = card.id;
+    if (Object.keys(fields).length) editCard(card.id, fields);
+    else renderBoard();   // nothing to queue, but the box still has to go
+  }
+  [title, note, due].forEach(function (f) {
+    f.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    });
+  });
+
+  // Changing the label normally leaves the editor open: it is a property of the
+  // card you are still editing, the card stays exactly where it is, and closing
+  // would throw away anything typed into the fields above but not yet saved.
+  // The rebuild carries both across (see editDraft in renderBoard).
+  box.appendChild(segGroup('Label', segRow(LABEL_OPTIONS, card.label, function (v) {
+    if (v === card.label) return;                 // already this label: nothing to write
+    blurBoardField();
+    var fields = { label: v };
+    // Under a filter, though, the new label can take the card off screen — and
+    // the editor with it, along with anything typed into it. Losing someone's
+    // typing to a filter is not acceptable, so commit the text alongside the
+    // label and say what happened, since the card is about to vanish.
+    var leaving = boardFilter !== 'all' && v !== boardFilter;
+    if (leaving) {
+      var edits = changedFields();
+      Object.keys(edits).forEach(function (k) { fields[k] = edits[k]; });
+    }
+    editCard(card.id, fields);
+    if (leaving) {
+      announce((fields.title || card.title) + ' saved as ' + v +
+               ' — hidden by the ' + boardFilter + ' filter');
+    }
+  }, 'label:')));
+
+  // Moving does close it: the card leaves the column this box is anchored
+  // under, which on a phone means it lands somewhere off screen entirely. The
+  // move is the whole gesture, so it ends the interaction — announced, because
+  // with the editor gone the only feedback is the card appearing elsewhere.
+  box.appendChild(segGroup('Column', segRow(LIST_OPTIONS, card.list, function (v) {
+    if (v === card.list) return;
+    blurBoardField();
+    var pos = endPos(v);
+    closeCardEditor();
+    focusCardId = card.id;
+    announce(card.title + ' moved to ' + BOARD_LIST_NAMES[v]);
+    moveCard(card.id, v, pos);
+  }, 'list:')));
+
+  var actions = document.createElement('div');
+  actions.className = 'card-editor-actions';
+
+  var saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'addbtn';
+  saveBtn.dataset.ctl = 'save';
+  saveBtn.textContent = 'Save';
+  saveBtn.addEventListener('click', commit);
+  actions.appendChild(saveBtn);
+
+  /**
+   * Delete is a hard delete on the server and sits directly under the column
+   * pills, one tap away in a panel that itself opens on a tap. Everywhere else
+   * this app makes an accidental tap recoverable — a crossed-off item gets
+   * three seconds of Undo before it even reaches the server — so this asks
+   * twice instead. Same pill vocabulary as the pickers above it: no modal.
+   */
+  var del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'seg card-del';
+  del.dataset.ctl = 'delete';
+
+  /** Paint whichever of the two states deleteArmedId says we are in. */
+  function paintDel() {
+    var armed = deleteArmedId === card.id;
+    del.classList.toggle('armed', armed);
+    del.textContent = armed ? 'Delete?' : 'Delete';
+    del.setAttribute('aria-label',
+      (armed ? 'Confirm deleting ' : 'Delete ') + card.title);
+  }
+  function disarm() {
+    if (deleteArmedId !== card.id) return;
+    deleteArmedId = null;
+    paintDel();
+  }
+  paintDel();   // a rebuild mid-confirm comes back up still armed
+
+  del.addEventListener('click', function () {
+    if (deleteArmedId !== card.id) {
+      deleteArmedId = card.id;
+      paintDel();
+      announce('Tap Delete again to remove ' + card.title);
+      return;
+    }
+    blurBoardField();
+    deleteCard(card.id);
+  });
+  actions.appendChild(del);
+  box.appendChild(actions);
+
+  // Touching anything else in the editor takes the safety back off. An armed
+  // Delete must not sit there waiting to fire on a stray tap after the user has
+  // moved on. Closing the editor, or opening another card's, disarms it too.
+  ['pointerdown', 'keydown', 'focusin'].forEach(function (evt) {
+    box.addEventListener(evt, function (e) { if (!del.contains(e.target)) disarm(); }, true);
+  });
+
+  anchor.parentNode.insertBefore(box, anchor.nextSibling);
+
+  // Only ever on request. A poll tick that merely rebuilds an editor which
+  // nobody is touching must not steal the focus from wherever it actually is.
+  if (focusCtl) {
+    var f = ctlIn(box, focusCtl);
+    if (f) f.focus();
+  }
+}
+
+/**
+ * The add-card row and the label filter. Wired once and updated in place — the
+ * same discipline as wireChoreAdd, and the reason a poll tick can never wipe a
+ * half-typed card or the column you picked for it: none of this is inside
+ * #boardColumns, so renderBoard() never touches it.
+ */
+function wireBoardControls() {
+  var input = document.getElementById('addCard');
+  var btn = document.getElementById('addCardBtn');
+  var opts = document.getElementById('addCardOpts');
+  var filter = document.getElementById('boardFilter');
+  if (!input || !btn || !opts || !filter) return;
+
+  function submit() {
+    if (!input.value.trim()) { input.focus(); return; }
+    // The eighth write path that touches the board, and the one that was
+    // missing this: with focus in an open editor's field, renderBoard's input
+    // guard would defer the rebuild the new card needs to appear at all.
+    blurBoardField();
+    addCard(input.value);
+    input.value = '';
+    input.focus();          // adding several cards in a row is the common case
+  }
+  btn.addEventListener('click', submit);
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+  });
+
+  // Captioned for the same reason the editor's two pickers are: "Personal
+  // School Now This week Later Someday Done" in one run says nothing about
+  // which half does what.
+  opts.appendChild(segGroup('Label',
+    segRow(LABEL_OPTIONS, addCardLabel, function (v) { addCardLabel = v; })));
+  opts.appendChild(segGroup('Column',
+    segRow(LIST_OPTIONS, addCardList, function (v) { addCardList = v; })));
+
+  filter.appendChild(segRow(FILTER_OPTIONS, boardFilter, function (v) {
+    // The sixth caller of the rebuild, and the last one to need this: on a
+    // browser that does not focus a button on click, a field inside the editor
+    // keeps focus, renderBoard's guard defers, and the pressed pill disagrees
+    // with the columns until something else blurs.
+    blurBoardField();
+    // This click can take the card behind an open editor out of view just as
+    // surely as changing its label can — the same hazard the label pill
+    // guards against (see openCardEditor). Left alone, renderBoard() below
+    // finds the box no longer anchored to a visible card and closes it,
+    // taking anything typed but unsaved with it, silently. So commit first,
+    // the same way the label pill does, and say what happened.
+    var editing = editingId && findCard(editingId);
+    var box = editing && document.querySelector('#boardColumns .card-editor');
+    if (box && box.dataset.card !== editingId) box = null;
+    var leaving = !!(editing && box && v !== 'all' && editing.label !== v);
+    var fields = leaving ? changedCardFields(editing, box) : {};
+    boardFilter = v;
+    if (leaving && Object.keys(fields).length) {
+      editCard(editing.id, fields);   // enqueues, which renders under the new filter
+      announce((fields.title || editing.title) + ' saved — hidden by the ' + v + ' filter');
+    } else {
+      renderBoard();
+    }
+  }));
+}
+
+/* ---------- view switch (dashboard <-> chores <-> board) ---------- */
 
 var VIEW_KEY = 'fd.view';   // navigation state (per device, not synced)
 
+/**
+ * The single owner of both corner buttons. showView() and render() both need
+ * them updated, and render() runs on every poll tick — so rather than each
+ * deciding for itself (and re-showing a button the other just hid), both derive
+ * the same answer from boardAllowed and whichever view is actually on screen.
+ *
+ * `hidden` is set as a property, never as inline display: `.switch` sets
+ * display:flex, which beats the user-agent [hidden] rule, so index.html carries
+ * an explicit `.switch[hidden] { display: none; }` for exactly this.
+ */
+function syncSwitches() {
+  var boardEl = document.getElementById('boardView');
+  var choresEl = document.getElementById('choresView');
+  var onBoard = !!boardEl && !boardEl.hidden;
+  var onChores = !!choresEl && !choresEl.hidden;
+
+  var ch = document.getElementById('choresToggle');
+  if (ch) {
+    ch.hidden = onBoard;                  // the open view owns the 12px slot
+    ch.classList.toggle('on', onChores);  // swaps the broom icon for a back chevron
+    ch.setAttribute('aria-label', onChores ? 'Back to dashboard' : 'Switch to chores');
+  }
+
+  var bd = document.getElementById('boardToggle');
+  if (bd) {
+    bd.hidden = !boardAllowed || onChores;
+    bd.classList.toggle('on', onBoard);
+    bd.setAttribute('aria-label', onBoard ? 'Back to dashboard' : 'Switch to board');
+  }
+
+  // Two icons need a wider inset on the dashboard header than one does.
+  document.body.classList.toggle('has-board', boardAllowed);
+}
+
 function showView(name) {
-  var chores = name === 'chores';
-  document.getElementById('dashboardView').hidden = chores;
-  document.getElementById('choresView').hidden = !chores;
-  var btn = document.getElementById('choresToggle');
-  btn.classList.toggle('on', chores);   // swaps the broom icon for a back chevron
-  btn.setAttribute('aria-label', chores ? 'Back to dashboard' : 'Switch to chores');
-  try { sessionStorage.setItem(VIEW_KEY, name); } catch (e) {}
-  if (chores) renderChores();
+  var isChores = name === 'chores';
+  // A device the server has not cleared cannot reach the board even by asking
+  // for it directly; it lands back on the dashboard instead.
+  var isBoard = name === 'board' && boardAllowed;
+  document.getElementById('dashboardView').hidden = isChores || isBoard;
+  document.getElementById('choresView').hidden = !isChores;
+  document.getElementById('boardView').hidden = !isBoard;
+  // Leaving the board ends whatever was being edited: the box is about to be
+  // hidden, and coming back should not resume a half-finished edit.
+  if (!isBoard) closeCardEditor();
+  syncSwitches();
+
+  // Store what actually opened, not what was asked for, so a refused 'board'
+  // is not replayed on every reload.
+  var opened = isBoard ? 'board' : (isChores ? 'chores' : 'dashboard');
+  try { sessionStorage.setItem(VIEW_KEY, opened); } catch (e) {}
+
+  if (isChores) renderChores();
+  if (isBoard) { renderBoard(); refreshBoard(); }
 }
 
 function wireSwitch() {
-  var btn = document.getElementById('choresToggle');
-  if (!btn) return;
-  btn.addEventListener('click', function () {
-    var showing = !document.getElementById('choresView').hidden;
-    showView(showing ? 'dashboard' : 'chores');
+  var ch = document.getElementById('choresToggle');
+  if (ch) ch.addEventListener('click', function () {
+    showView(document.getElementById('choresView').hidden ? 'chores' : 'dashboard');
+  });
+  var bd = document.getElementById('boardToggle');
+  if (bd) bd.addEventListener('click', function () {
+    showView(boardVisible() ? 'dashboard' : 'board');
   });
 }
 
 function init() {
   state = load(CACHE_KEY, state);
+  // load() replaces state wholesale, so a cache written by an older build is
+  // missing every key added since it was last written — `board` in this build,
+  // `chores` for anything dormant since before 2026-07-23. The group() helpers
+  // tolerate undefined, but state.board.push / state.chores.push do not, so a
+  // device that had sat unopened would throw on the first thing it added.
+  // Repair every list before anything reads one.
+  ['shopping', 'todo', 'events', 'chores', 'board'].forEach(function (k) {
+    if (!Array.isArray(state[k])) state[k] = [];
+  });
   queue = load(QUEUE_KEY, []);
 
   var shared = adoptSetupLink();
@@ -1019,7 +2179,14 @@ function init() {
   requestWakeLock();
   wireSwitch();
   wireChoreAdd();
-  if (sessionStorage.getItem(VIEW_KEY) === 'chores') showView('chores');
+  // Unconditional, like wireChoreAdd: boardAllowed can turn true mid-session on
+  // a response, long after init() has run. Everything wired here lives inside
+  // #boardView, which stays hidden until the server says otherwise, and every
+  // write it can reach re-checks boardAllowed for itself.
+  wireBoardControls();
+  wireBoardDrag();
+  var savedView = sessionStorage.getItem(VIEW_KEY);
+  if (savedView === 'chores' || savedView === 'board') showView(savedView);
 
   hookAdd('addShopping', 'addShoppingBtn', 'shopping');
   hookAdd('addTodo', 'addTodoBtn', 'todo');
@@ -1035,10 +2202,12 @@ function init() {
   }
 
   render();
-  refresh();
+  // Not refresh(): a reload that restored the board has already asked for the
+  // board (showView above), and that response carries the dashboard too.
+  refreshVisible();
   flush();
 
-  window.addEventListener('online', function () { flush(); refresh(); });
+  window.addEventListener('online', function () { flush(); refreshVisible(); });
 
   // Coming back to the page should feel instant, not "wait for the next tick".
   document.addEventListener('visibilitychange', function () {

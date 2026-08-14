@@ -354,6 +354,8 @@
   .card-editor .add:focus { border-bottom-color: var(--ink); }
   .card-editor-actions { display: flex; align-items: center; gap: 8px; }
   .card-del { margin-left: auto; }
+  /* Armed for the confirming second tap — the same cue a pressed pill gets. */
+  .card-del.armed { color: var(--accent-strong); border-color: var(--accent-strong); }
   /* Two pickers (label, column) share one row: a wider gap between the groups
      than inside them, so they do not read as one flat run of seven pills. */
   #addCardOpts { gap: 8px 16px; }

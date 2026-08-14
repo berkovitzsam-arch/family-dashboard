@@ -1142,12 +1142,40 @@ var addCardList = 'now';
 var editingId = null;
 var editDraft = null;
 var openEditorFocus = null;   // one-shot: control to focus on the next rebuild
+var focusCardId = null;       // one-shot: card to focus on the next rebuild
+// Whose Delete is armed for its confirming second tap. Module-level for the
+// same reason editingId is: pollLoop calls render() — and so renderBoard() —
+// every 8s at the fast cadence, so a flag living in the button's closure would
+// silently revert to "Delete" a second or two after it was armed, and the
+// second tap would arm it again instead of deleting.
+var deleteArmedId = null;
 
 /** Forget the open editor. Its box goes on the next renderBoard(). */
 function closeCardEditor() {
   editingId = null;
   editDraft = null;
   openEditorFocus = null;
+  deleteArmedId = null;
+}
+
+/**
+ * Release a focused text field inside the columns before anything that will
+ * rebuild them.
+ *
+ * renderBoard's input guard defers the ENTIRE rebuild while a field in there
+ * has focus. That is right for a poll tick and wrong for a write the user just
+ * asked for: the write lands in state, the cache and the queue, but the screen
+ * keeps the old card and an orphaned editor — and every later tick hits the
+ * same guard, so the board stops repainting until something blurs the field.
+ *
+ * Enter never moves focus at all, and only Chrome moves it to a button on
+ * click, so every path that writes from inside the editor has to do this for
+ * itself. One helper, called from all of them, so they cannot drift apart.
+ */
+function blurBoardField() {
+  var wrap = document.getElementById('boardColumns');
+  var ae = document.activeElement;
+  if (wrap && ae && wrap.contains(ae) && /^(INPUT|TEXTAREA)$/.test(ae.tagName)) ae.blur();
 }
 
 /**
@@ -1190,6 +1218,9 @@ function renderBoard() {
   // it had. Either way it is consumed by this rebuild and not the next.
   var wantCtl = editorCtl || openEditorFocus;
   openEditorFocus = null;
+  // A closing editor hands focus back to its card. Same one-shot discipline.
+  var wantCard = focusCardId;
+  focusCardId = null;
 
   var now = new Date().toISOString();
   // The filter is a view over state, never a filter on what gets written:
@@ -1224,9 +1255,11 @@ function renderBoard() {
   var cards = wrap.querySelectorAll('.card');
   var focusEl = null;
   var editEl = null;
+  var wantCardEl = null;
   for (var i = 0; i < cards.length; i++) {
     if (focusedId && cards[i].dataset.id === focusedId) focusEl = cards[i];
     if (editingId && cards[i].dataset.id === editingId) editEl = cards[i];
+    if (wantCard && cards[i].dataset.id === wantCard) wantCardEl = cards[i];
   }
 
   // The card being edited can go out from under the editor: deleted on the
@@ -1234,8 +1267,11 @@ function renderBoard() {
   var editing = editEl && findCard(editingId);
   if (editingId && !editing) closeCardEditor();
   if (editing) openCardEditor(editEl, editing, wantCtl);
+  // However the editor closed, focus lands back on the card it belonged to —
+  // otherwise Save and a column move drop it on <body> while a re-tap does not.
+  if (wantCardEl) wantCardEl.focus();
   // If the editor just took focus, don't yank it back to the card behind it.
-  if (focusEl && !wantCtl) focusEl.focus();
+  else if (focusEl && !wantCtl) focusEl.focus();
 }
 
 /** One card. Faded in proportion to how long it has sat untouched. */
@@ -1478,16 +1514,16 @@ function editField(ctl, label, value, type, placeholder) {
 
 /** Open a card's editor, or close it if it is the one already open. */
 function toggleCardEditor(card) {
-  // Tapping a card ends any typing in the editor above it. Chrome blurs the
-  // field on mousedown anyway, but not every browser moves focus on a tap — and
-  // if a field in there is still focused when renderBoard runs, its input guard
-  // defers the rebuild and the tap appears to do nothing at all.
-  var wrap = document.getElementById('boardColumns');
-  var ae = document.activeElement;
-  if (wrap && ae && wrap.contains(ae) && /^(INPUT|TEXTAREA)$/.test(ae.tagName)) ae.blur();
-
-  if (editingId === card.id) closeCardEditor();
-  else { editingId = card.id; editDraft = null; openEditorFocus = 'title'; }
+  // Tapping a card ends any typing in the editor above it — without this the
+  // rebuild is deferred and the tap appears to do nothing at all.
+  blurBoardField();
+  if (editingId === card.id) { closeCardEditor(); focusCardId = card.id; }
+  else {
+    editingId = card.id;
+    editDraft = null;
+    deleteArmedId = null;    // a Delete armed on the card we just left
+    openEditorFocus = 'title';
+  }
   renderBoard();
 }
 
@@ -1510,18 +1546,44 @@ function openCardEditor(anchor, card, focusCtl) {
                         draft.title != null ? draft.title : card.title);
   var note = editField('note', 'Description',
                        draft.note != null ? draft.note : card.note, null, 'Description');
+  // A date input silently rejects anything that is not YYYY-MM-DD. The backend
+  // normalises due dates on read, but a feed can put a full timestamp in the
+  // sheet, so slice here too rather than let the field come up empty and then
+  // save that emptiness over a real date.
   var due = editField('due', 'Due date',
-                      draft.due != null ? draft.due : card.due, 'date');
+                      String(draft.due != null ? draft.due : (card.due || '')).slice(0, 10),
+                      'date');
   box.appendChild(title);
   box.appendChild(note);
   box.appendChild(due);
 
+  /**
+   * Only the text fields that actually differ from the card, shaped as a
+   * cardEdit payload. Empty when nothing was touched — Save then queues
+   * nothing, because a no-op write costs an Apps Script call from a quota the
+   * whole family shares AND bumps updated_at, which would reset the age fade on
+   * a card nobody edited. That fade is the whole point of the aging.
+   */
+  function changedFields() {
+    var out = {};
+    var t = title.value.trim() || card.title;
+    if (t !== card.title) out.title = t;
+    if (note.value !== (card.note || '')) out.note = note.value;
+    if (due.value !== String(card.due || '').slice(0, 10)) out.due = due.value;
+    return out;
+  }
+
   function commit() {
+    // Enter does not move focus, so without this the rebuild below is deferred
+    // by renderBoard's input guard and the write lands invisibly.
+    blurBoardField();
+    var fields = changedFields();
     // Close first: editCard queues, which renders, which is what takes the box
     // off screen. Doing it the other way round would just reopen it.
     closeCardEditor();
-    editCard(card.id, { title: title.value.trim() || card.title,
-                        note: note.value, due: due.value });
+    focusCardId = card.id;
+    if (Object.keys(fields).length) editCard(card.id, fields);
+    else renderBoard();   // nothing to queue, but the box still has to go
   }
   [title, note, due].forEach(function (f) {
     f.addEventListener('keydown', function (e) {
@@ -1529,12 +1591,28 @@ function openCardEditor(anchor, card, focusCtl) {
     });
   });
 
-  // Changing the label leaves the editor open: it is a property of the card you
-  // are still editing, the card stays exactly where it is, and closing would
-  // throw away anything typed into the fields above but not yet saved. The
-  // rebuild carries both across (see editDraft in renderBoard).
+  // Changing the label normally leaves the editor open: it is a property of the
+  // card you are still editing, the card stays exactly where it is, and closing
+  // would throw away anything typed into the fields above but not yet saved.
+  // The rebuild carries both across (see editDraft in renderBoard).
   box.appendChild(segRow(LABEL_OPTIONS, card.label, function (v) {
-    editCard(card.id, { label: v });
+    if (v === card.label) return;                 // already this label: nothing to write
+    blurBoardField();
+    var fields = { label: v };
+    // Under a filter, though, the new label can take the card off screen — and
+    // the editor with it, along with anything typed into it. Losing someone's
+    // typing to a filter is not acceptable, so commit the text alongside the
+    // label and say what happened, since the card is about to vanish.
+    var leaving = boardFilter !== 'all' && v !== boardFilter;
+    if (leaving) {
+      var edits = changedFields();
+      Object.keys(edits).forEach(function (k) { fields[k] = edits[k]; });
+    }
+    editCard(card.id, fields);
+    if (leaving) {
+      announce((fields.title || card.title) + ' saved as ' + v +
+               ' — hidden by the ' + boardFilter + ' filter');
+    }
   }, 'label:'));
 
   // Moving does close it: the card leaves the column this box is anchored
@@ -1543,8 +1621,10 @@ function openCardEditor(anchor, card, focusCtl) {
   // with the editor gone the only feedback is the card appearing elsewhere.
   box.appendChild(segRow(LIST_OPTIONS, card.list, function (v) {
     if (v === card.list) return;
+    blurBoardField();
     var pos = endPos(v);
     closeCardEditor();
+    focusCardId = card.id;
     announce(card.title + ' moved to ' + BOARD_LIST_NAMES[v]);
     moveCard(card.id, v, pos);
   }, 'list:'));
@@ -1560,15 +1640,52 @@ function openCardEditor(anchor, card, focusCtl) {
   saveBtn.addEventListener('click', commit);
   actions.appendChild(saveBtn);
 
+  /**
+   * Delete is a hard delete on the server and sits directly under the column
+   * pills, one tap away in a panel that itself opens on a tap. Everywhere else
+   * this app makes an accidental tap recoverable — a crossed-off item gets
+   * three seconds of Undo before it even reaches the server — so this asks
+   * twice instead. Same pill vocabulary as the pickers above it: no modal.
+   */
   var del = document.createElement('button');
   del.type = 'button';
   del.className = 'seg card-del';
   del.dataset.ctl = 'delete';
-  del.textContent = 'Delete';
-  del.setAttribute('aria-label', 'Delete ' + card.title);
-  del.addEventListener('click', function () { deleteCard(card.id); });
+
+  /** Paint whichever of the two states deleteArmedId says we are in. */
+  function paintDel() {
+    var armed = deleteArmedId === card.id;
+    del.classList.toggle('armed', armed);
+    del.textContent = armed ? 'Delete?' : 'Delete';
+    del.setAttribute('aria-label',
+      (armed ? 'Confirm deleting ' : 'Delete ') + card.title);
+  }
+  function disarm() {
+    if (deleteArmedId !== card.id) return;
+    deleteArmedId = null;
+    paintDel();
+  }
+  paintDel();   // a rebuild mid-confirm comes back up still armed
+
+  del.addEventListener('click', function () {
+    if (deleteArmedId !== card.id) {
+      deleteArmedId = card.id;
+      paintDel();
+      announce('Tap Delete again to remove ' + card.title);
+      return;
+    }
+    blurBoardField();
+    deleteCard(card.id);
+  });
   actions.appendChild(del);
   box.appendChild(actions);
+
+  // Touching anything else in the editor takes the safety back off. An armed
+  // Delete must not sit there waiting to fire on a stray tap after the user has
+  // moved on. Closing the editor, or opening another card's, disarms it too.
+  ['pointerdown', 'keydown', 'focusin'].forEach(function (evt) {
+    box.addEventListener(evt, function (e) { if (!del.contains(e.target)) disarm(); }, true);
+  });
 
   anchor.parentNode.insertBefore(box, anchor.nextSibling);
 

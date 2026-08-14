@@ -57,11 +57,25 @@ function tearDownBoard() {
   localStorage.removeItem(BOARD_OK_KEY);
   state.board = [];
   save(CACHE_KEY, state);
+  // A queued cardAdd/cardEdit carries the card's title and note in plaintext.
+  // Once a device can no longer see the board, nothing board-shaped should
+  // still be waiting to leave it in the next flush() — but a shopping, to-do,
+  // note or chore op queued beforehand belongs to the shared family lists and
+  // has nothing to do with the board, so it must survive untouched.
+  queue = queue.filter(function (op) { return op.op.slice(0, 4) !== 'card'; });
+  save(QUEUE_KEY, queue);
   closeCardEditor();   // the card it points at no longer exists here
   // The titles are also sitting in the view's DOM, which nothing repaints once
   // it is hidden — clearing state alone would leave them on the device.
   var wrap = document.getElementById('boardColumns');
   if (wrap) wrap.innerHTML = '';
+  // #live is screen-reader-only but still present in the accessibility tree,
+  // and the add-card input can be holding an unsubmitted title — both can be
+  // carrying a card's private text just as surely as the columns just cleared.
+  var live = document.getElementById('live');
+  if (live) live.textContent = '';
+  var addInput = document.getElementById('addCard');
+  if (addInput) addInput.value = '';
   // Don't strand the device on a view the server will no longer feed.
   // syncSwitches() takes the icon away on the next render either way, but the
   // open view has to be closed explicitly.
@@ -1757,6 +1771,28 @@ function readCardEditor(box) {
   return out;
 }
 
+/**
+ * `box`'s text fields, shaped as a cardEdit payload, but only the ones that
+ * actually differ from `card` — empty when nothing was touched, for the same
+ * reason openCardEditor's commit() cares: a no-op write costs an Apps Script
+ * call and bumps updated_at for nothing. Pulled out to module level, rather
+ * than left as a closure inside openCardEditor, so the filter pill — which
+ * sits outside that closure, in wireBoardControls — can commit a card's
+ * unsaved typing before its own click hides it, the same way the label pill
+ * already does from inside the editor.
+ */
+function changedCardFields(card, box) {
+  var out = {};
+  var t = ctlIn(box, 'title');
+  var n = ctlIn(box, 'note');
+  var d = ctlIn(box, 'due');
+  var tVal = (t ? t.value.trim() : '') || card.title;
+  if (tVal !== card.title) out.title = tVal;
+  if (n && n.value !== (card.note || '')) out.note = n.value;
+  if (d && d.value !== String(card.due || '').slice(0, 10)) out.due = d.value;
+  return out;
+}
+
 function editField(ctl, label, value, type, placeholder) {
   var el = document.createElement('input');
   el.className = 'add';
@@ -1821,14 +1857,7 @@ function openCardEditor(anchor, card, focusCtl) {
    * whole family shares AND bumps updated_at, which would reset the age fade on
    * a card nobody edited. That fade is the whole point of the aging.
    */
-  function changedFields() {
-    var out = {};
-    var t = title.value.trim() || card.title;
-    if (t !== card.title) out.title = t;
-    if (note.value !== (card.note || '')) out.note = note.value;
-    if (due.value !== String(card.due || '').slice(0, 10)) out.due = due.value;
-    return out;
-  }
+  function changedFields() { return changedCardFields(card, box); }
 
   function commit() {
     // Enter does not move focus, so without this the rebuild below is deferred
@@ -1969,6 +1998,10 @@ function wireBoardControls() {
 
   function submit() {
     if (!input.value.trim()) { input.focus(); return; }
+    // The eighth write path that touches the board, and the one that was
+    // missing this: with focus in an open editor's field, renderBoard's input
+    // guard would defer the rebuild the new card needs to appear at all.
+    blurBoardField();
     addCard(input.value);
     input.value = '';
     input.focus();          // adding several cards in a row is the common case
@@ -1985,12 +2018,26 @@ function wireBoardControls() {
     // The sixth caller of the rebuild, and the last one to need this: on a
     // browser that does not focus a button on click, a field inside the editor
     // keeps focus, renderBoard's guard defers, and the pressed pill disagrees
-    // with the columns until something else blurs. Nothing is at risk here —
-    // filtering touches no state — but a view that ignores its own control is
-    // still wrong.
+    // with the columns until something else blurs.
     blurBoardField();
+    // This click can take the card behind an open editor out of view just as
+    // surely as changing its label can — the same hazard the label pill
+    // guards against (see openCardEditor). Left alone, renderBoard() below
+    // finds the box no longer anchored to a visible card and closes it,
+    // taking anything typed but unsaved with it, silently. So commit first,
+    // the same way the label pill does, and say what happened.
+    var editing = editingId && findCard(editingId);
+    var box = editing && document.querySelector('#boardColumns .card-editor');
+    if (box && box.dataset.card !== editingId) box = null;
+    var leaving = !!(editing && box && v !== 'all' && editing.label !== v);
+    var fields = leaving ? changedCardFields(editing, box) : {};
     boardFilter = v;
-    renderBoard();
+    if (leaving && Object.keys(fields).length) {
+      editCard(editing.id, fields);   // enqueues, which renders under the new filter
+      announce((fields.title || editing.title) + ' saved — hidden by the ' + v + ' filter');
+    } else {
+      renderBoard();
+    }
   }));
 }
 

@@ -332,9 +332,31 @@
           margin-bottom: 8px; cursor: pointer; background: none; }
   .card:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
   .card.dragging { opacity: 0.4; }
-  .card-title { font-size: 15px; }
+  /* Title and its star share the top line; the title takes what is left, and
+     min-width:0 lets a long one wrap instead of pushing the star off. */
+  .card-head { display: flex; align-items: flex-start; gap: 6px; }
+  .card-title { font-size: 15px; flex: 1 1 auto; min-width: 0; }
   .card-sub { font-size: 12px; color: var(--mute); margin-top: 3px; }
   .card-badge { margin-right: 5px; }
+
+  /* The important toggle. Filled star on, outline star off: the two states
+     differ in SHAPE, because a hue difference alone does not survive a glance
+     in themes whose colours sit a few percent apart — the same rule the
+     overdue/today pills follow. Colour reinforces, never carries. The negative
+     margins pull the 44px-ish tap area back out to the card's own padding so
+     the glyph still lines up with the title's cap height. */
+  .card-star { flex: none; margin: -4px -6px 0 0; padding: 4px 6px; border: 0;
+               background: none; color: var(--faint); cursor: pointer;
+               line-height: 0; border-radius: 6px; }
+  .card-star svg { width: 17px; height: 17px; display: block; }
+  .card-star:hover { color: var(--mute); }
+  .card-star[aria-pressed="true"] { color: var(--accent-strong); }
+  .card-star:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+  /* …and the card carries the same accent edge the editor uses to tie itself to
+     its card, so a starred one is findable from the far end of a column and not
+     only from a 17px glyph in its corner. Thickness, not hue, again. The extra
+     2px of padding keeps the text where it was under a 1px border. */
+  .card.important { border-left: 3px solid var(--accent-strong); padding-left: 9px; }
   /* Late and today are pills, not just colours. This board exists to catch work
      that rots unnoticed, so "late" has to survive a glance — and a colour alone
      does not: it is the same size and weight as the muted text either side of
@@ -359,16 +381,22 @@
      border would make Done louder rather than quieter. Breaking the rule up
      reads as less finished-looking at the same weight. */
   .board-col[data-list="done"] .card { border-style: dashed; }
+  /* …except the starred edge, which has to stay solid. Done's dashed rule wins
+     on specificity over .card.important's shorthand, and a broken-up accent
+     edge is exactly half a mark — the one thing the star exists to make
+     unmissable. The other three sides stay dashed. */
+  .board-col[data-list="done"] .card.important { border-left-style: solid; }
   .board-col[data-list="done"] .card-title { color: var(--mute); }
   .board-col[data-list="done"] .card-sub { color: var(--faint); }
-  /* A finished card's due date is history, not a warning — and most of them
-     have one in the past, so without this every second card in Done wears a
-     filled "9 days late" pill in the one column where nothing is late. Undo
-     both pills back to plain text here. */
-  .board-col[data-list="done"] .due-overdue,
-  .board-col[data-list="done"] .due-today {
-    color: inherit; background: none; border-color: transparent;
-    padding: 0; font-weight: inherit; }
+  /* A finished card no longer draws a due date at all — it draws when it was
+     finished, and cardEl gives that its own class rather than a due-* one. (The
+     rule that used to flatten .due-overdue / .due-today back to plain text in
+     here went with it: nothing in Done can render either class any more.)
+     --mute rather than the --faint the rest of the subline gets, matching the
+     title above it: Done recedes as a column, but not so far that you cannot
+     read when something was done. Specificity 0,3,0 so it beats the .card-sub
+     rule directly above. */
+  .board-col[data-list="done"] .card-done { color: var(--mute); }
 
   /* The inline card editor is the card's sibling, not its child, so it sits in
      the column flow directly beneath it in both layouts. The accent edge ties it
@@ -430,6 +458,49 @@
     .card-editor-actions { flex-wrap: nowrap; }
     .card-editor-actions .addbtn, .card-editor-actions .seg { white-space: nowrap; }
   }
+
+  /* ---------- phone: foldable sections, and a reachable Add ---------- */
+  /* Below the five-column breakpoint the board is one stacked column, and two
+     dozen cards is a very long scroll. Later, Someday and Done fold away
+     (closed by default, remembered per device), and the add-card row is
+     *ordered* up above the columns so putting something on the board does not
+     mean scrolling past everything already on it. Order only — the DOM keeps
+     its reading order, and so does Tab. Nothing in here applies at 900px and
+     up: the desktop layout is fine as it is. */
+  @media (max-width: 899px) {
+    /* :not([hidden]) for the reason the desktop frame documents above: an
+       author display: rule beats the user-agent [hidden] one regardless of
+       specificity, and an unguarded one here would un-hide the private board on
+       every other screen in the house. */
+    #boardView:not([hidden]) { display: flex; flex-direction: column; }
+    .board-head { order: 1; }
+    .board-agenda { order: 2; }
+    #boardAdd { order: 3; margin-bottom: 20px; }
+    #boardColumns { order: 4; }
+  }
+
+  /* A foldable heading is a real button, but it is still the section's name —
+     so it inherits the h2's micro-type exactly and adds only a chevron and a
+     count. text-transform and letter-spacing are re-inherited explicitly: the
+     UA button style resets both. */
+  .col-toggle { display: flex; align-items: center; gap: 7px; width: 100%;
+                font: inherit; color: inherit; text-transform: inherit;
+                letter-spacing: inherit; background: none; border: 0; margin: 0;
+                padding: 3px 0; cursor: pointer; text-align: left; }
+  .col-toggle:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+  .col-caret { display: inline-block; font-size: 15px; line-height: 1;
+               transition: transform 0.15s ease; }
+  .col-toggle[aria-expanded="true"] .col-caret { transform: rotate(90deg); }
+  /* A folded section has to say how much is behind it, or it reads as lost
+     rather than closed. Tabular figures so the number does not shift the row
+     as it changes. */
+  .col-count { margin-left: auto; color: var(--faint);
+               font-variant-numeric: tabular-nums; }
+  /* Only the cards fold; the heading, the column's drop wiring and its outline
+     all stay. Spelled out rather than left to the user-agent [hidden] rule,
+     because this app has been bitten once by an author display: quietly
+     beating it. */
+  .board-col-body[hidden] { display: none; }
 
   .chores-head { justify-content: flex-start; }
   #choresGroups { padding-top: 24px; }
@@ -543,7 +614,9 @@
   </div>
   <div class="board-agenda" id="boardAgenda"></div>
   <div class="board-cols" id="boardColumns"></div>
-  <section>
+  <!-- Ordered above the columns on a phone, and left exactly here on a laptop.
+       CSS order only: the DOM order is the reading order and the tab order. -->
+  <section id="boardAdd">
     <div class="addrow">
       <input class="add" id="addCard" placeholder="Add a card" autocomplete="off"
              enterkeyhint="done" aria-label="Add a card">

@@ -20,6 +20,9 @@ var THEME_KEY = 'fd.theme';
 var EMOJI_KEY = 'fd.emoji';
 var AWAKE_KEY = 'fd.awake';
 var BOARD_OK_KEY = 'fd.boardok';
+// Which of the board's foldable sections are open on this phone. One key for
+// all three, holding the open ones — see openSections() in the board view.
+var BOARD_OPEN_KEY = 'fd.boardopen';
 var THEMES = ['paper', 'pastel', 'jewel', 'almanac'];
 
 var state = { shopping: [], todo: [], note: '', events: [], chores: [], board: [], fetched: null };
@@ -1192,6 +1195,112 @@ function blurBoardField() {
   if (wrap && ae && wrap.contains(ae) && /^(INPUT|TEXTAREA)$/.test(ae.tagName)) ae.blur();
 }
 
+/* ---------- foldable sections (phone layout only) ---------- */
+
+/**
+ * Which columns fold away below 900px, and where that choice is remembered.
+ *
+ * On a laptop the five columns sit side by side and there is nothing to fold.
+ * On a phone they stack into one very long scroll, so the three furthest from
+ * "do this now" collapse, closed by default. Now and This week never do: they
+ * are what the board is for, and a phone that opens on five closed sections
+ * shows nothing at all.
+ *
+ * Stored as the comma-joined names of the sections that are OPEN, not closed.
+ * That way a device that has never touched it reads '' — which is already the
+ * closed-by-default answer — and no separate "has this been set" flag is
+ * needed. One plain per-device string, never synced, never sent anywhere: the
+ * same shape as fd.theme / fd.awake / fd.boardok.
+ */
+var BOARD_COLLAPSIBLE = ['later', 'someday', 'done'];
+
+function collapsible(list) { return BOARD_COLLAPSIBLE.indexOf(list) !== -1; }
+
+function openSections() {
+  return String(localStorage.getItem(BOARD_OPEN_KEY) || '').split(',');
+}
+
+/** Now and This week are always open, whatever storage happens to hold. */
+function sectionOpen(list) {
+  if (!collapsible(list)) return true;
+  return openSections().indexOf(list) !== -1;
+}
+
+function setSectionOpen(list, on) {
+  // Rebuilt from BOARD_COLLAPSIBLE rather than edited in place, so a stale
+  // value — a section that used to fold, or junk — cannot survive a write.
+  var open = BOARD_COLLAPSIBLE.filter(function (l) {
+    return l === list ? !!on : sectionOpen(l);
+  });
+  try { localStorage.setItem(BOARD_OPEN_KEY, open.join(',')); } catch (e) {}
+}
+
+/**
+ * Fold a section away, or open it.
+ *
+ * The ninth path that triggers a rebuild, and it needs the blur for the same
+ * reason the other eight do: with a field inside the columns focused,
+ * renderBoard defers the ENTIRE rebuild, and the tap would flip the stored
+ * preference while the screen kept showing the old state.
+ *
+ * Nothing is written to the server here — this is a way of looking, like the
+ * label filter — so it calls renderBoard() directly rather than going through
+ * a queued op the way every board write does.
+ */
+function toggleSection(list) {
+  blurBoardField();
+  setSectionOpen(list, !sectionOpen(list));
+  renderBoard();
+}
+
+/**
+ * A column's heading.
+ *
+ * On a wide screen this is what it has always been, a plain h2. On a phone the
+ * three foldable sections get a real <button> inside it — so it is reachable
+ * by keyboard, announces its own state through aria-expanded, and carries the
+ * count of what is behind it. A closed section that did not say how many cards
+ * it held would read as lost rather than folded.
+ */
+function sectionHead(listName, count, folds, open) {
+  var h = document.createElement('h2');
+  if (!folds) {
+    h.textContent = BOARD_LIST_NAMES[listName];
+    return h;
+  }
+
+  var b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'col-toggle';
+  b.dataset.list = listName;      // how the next rebuild finds it again to refocus
+  b.setAttribute('aria-expanded', String(!!open));
+
+  var caret = document.createElement('span');
+  caret.className = 'col-caret';
+  caret.setAttribute('aria-hidden', 'true');   // aria-expanded already says it
+  caret.textContent = '›';                // rotated by CSS when open
+  b.appendChild(caret);
+
+  var name = document.createElement('span');
+  name.textContent = BOARD_LIST_NAMES[listName];
+  b.appendChild(name);
+
+  var n = document.createElement('span');
+  n.className = 'col-count';
+  n.textContent = String(count);
+  b.appendChild(n);
+  // A bare number reads as "Later 3" to a screen reader, which is not obviously
+  // a count of anything. Say the noun, visibly only to them.
+  var unit = document.createElement('span');
+  unit.className = 'sr-only';
+  unit.textContent = count === 1 ? ' card' : ' cards';
+  b.appendChild(unit);
+
+  b.addEventListener('click', function () { toggleSection(listName); });
+  h.appendChild(b);
+  return h;
+}
+
 /**
  * The five horizon columns, rebuilt from state. Everything about a card —
  * which column, how urgent its date, how faded it has gone — is recomputed
@@ -1220,9 +1329,18 @@ function renderBoard() {
   // while a card has focus (the way the input guard does) would freeze the
   // board for as long as it stayed focused. Rebuild, then put focus back on the
   // same card instead — Task 9's keyboard moves depend on it surviving a poll.
+  //
+  // The two buttons the columns now contain get the same treatment rather than
+  // a one-shot flag apiece: a card's star and a section's fold both survive
+  // being pressed AND every poll tick that follows, because what is restored is
+  // read off the live activeElement each time rather than armed once. A
+  // one-shot would be consumed by the first of the two rebuilds one star tap
+  // causes and lost by the second.
   var active = document.activeElement;
-  var focusedId = (active && active.classList && active.classList.contains('card') &&
-                   wrap.contains(active)) ? active.dataset.id : null;
+  var inWrap = !!(active && active.classList && wrap.contains(active));
+  var focusedId = (inWrap && active.classList.contains('card')) ? active.dataset.id : null;
+  var focusedStar = (inWrap && active.classList.contains('card-star')) ? active.dataset.card : null;
+  var focusedSection = (inWrap && active.classList.contains('col-toggle')) ? active.dataset.list : null;
 
   // Carry the open editor across the rebuild: its unsaved field values and
   // whichever of its controls had focus. Harvested only when the box on screen
@@ -1251,24 +1369,43 @@ function renderBoard() {
   var groups = BOARD.group(visible);
   wrap.innerHTML = '';
 
+  // Re-read per rebuild rather than latched at startup, exactly the way
+  // wireCardDrag reads the same breakpoint: a window dragged across 900px then
+  // corrects itself on the next repaint instead of needing a reload.
+  var narrow = !(window.matchMedia && window.matchMedia('(min-width: 900px)').matches);
+
   BOARD.LISTS.forEach(function (listName) {
     var col = document.createElement('div');
     col.className = 'board-col';
     col.dataset.list = listName;
     wireColumnDrop(col, listName);
 
-    var h = document.createElement('h2');
-    h.textContent = BOARD_LIST_NAMES[listName];
-    col.appendChild(h);
-
     var cards = groups[listName];
+    var folds = narrow && collapsible(listName);
+    var open = !folds || sectionOpen(listName);
+    col.appendChild(sectionHead(listName, cards.length, folds, open));
+
+    // The cards go in a box of their own so a fold hides exactly them: the
+    // heading, the column's drop wiring and its outline all stay put.
+    //
+    // A closed section is still BUILT, and hidden with `hidden` — not skipped.
+    // Skipping would take the open editor's card out of the DOM, and
+    // renderBoard below reads "the card being edited has gone" as "close the
+    // editor", silently throwing away whatever had been typed into it and not
+    // saved. Hidden, the box and its unsaved draft come straight back when the
+    // section is opened again.
+    var body = document.createElement('div');
+    body.className = 'board-col-body';
+    body.hidden = !open;
+
     if (!cards.length) {
       var empty = document.createElement('div');
       empty.className = 'card-empty';
       empty.textContent = '—';
-      col.appendChild(empty);
+      body.appendChild(empty);
     }
-    cards.forEach(function (card) { col.appendChild(cardEl(card, now, listName)); });
+    cards.forEach(function (card) { body.appendChild(cardEl(card, now, listName)); });
+    col.appendChild(body);
     wrap.appendChild(col);
   });
 
@@ -1283,6 +1420,22 @@ function renderBoard() {
     if (editingId && cards[i].dataset.id === editingId) editEl = cards[i];
     if (wantCard && cards[i].dataset.id === wantCard) wantCardEl = cards[i];
   }
+  // The two buttons, walked the same way and matched the same way — by the id
+  // or the list name they carry, never by a selector built out of one.
+  var starEl = null;
+  if (focusedStar) {
+    var stars = wrap.querySelectorAll('.card-star');
+    for (var s = 0; s < stars.length; s++) {
+      if (stars[s].dataset.card === focusedStar) starEl = stars[s];
+    }
+  }
+  var sectionEl = null;
+  if (focusedSection) {
+    var heads = wrap.querySelectorAll('.col-toggle');
+    for (var t = 0; t < heads.length; t++) {
+      if (heads[t].dataset.list === focusedSection) sectionEl = heads[t];
+    }
+  }
 
   // The card being edited can go out from under the editor: deleted on the
   // other device, or filtered off screen. Don't keep pointing at it.
@@ -1292,8 +1445,18 @@ function renderBoard() {
   // However the editor closed, focus lands back on the card it belonged to —
   // otherwise Save and a column move drop it on <body> while a re-tap does not.
   if (wantCardEl) wantCardEl.focus();
-  // If the editor just took focus, don't yank it back to the card behind it.
-  else if (focusEl && !wantCtl) focusEl.focus();
+  // If the editor just took focus, don't yank it back to whatever was behind
+  // it. Otherwise put focus back exactly where the rebuild found it — at most
+  // one of these three can be set, since they come from mutually exclusive
+  // tests on the same activeElement.
+  else if (!wantCtl) {
+    if (focusEl) focusEl.focus();
+    // A card inside a section that was just folded shut is display:none, so
+    // .focus() on it is a no-op and focus lands on <body>. That is the right
+    // answer: the thing it was on is not on screen any more.
+    else if (starEl) starEl.focus();
+    else if (sectionEl) sectionEl.focus();
+  }
 }
 
 /**
@@ -1304,7 +1467,7 @@ function renderBoard() {
  */
 function cardEl(card, nowIso, listName) {
   var el = document.createElement('article');
-  el.className = 'card';
+  el.className = 'card' + (card.important ? ' important' : '');
   el.dataset.id = card.id;
   el.tabIndex = 0;
   // It opens an editor when activated, so announce it as the control it is —
@@ -1314,10 +1477,16 @@ function cardEl(card, nowIso, listName) {
   el.setAttribute('aria-expanded', String(editingId === card.id));
   el.style.opacity = String(1 - 0.45 * BOARD.ageLevel(card, nowIso));
 
+  // Title and star share the top line, the title taking whatever is left.
+  var head = document.createElement('div');
+  head.className = 'card-head';
+
   var title = document.createElement('div');
   title.className = 'card-title';
   title.textContent = card.title;
-  el.appendChild(title);
+  head.appendChild(title);
+  head.appendChild(starButton(card, listName));
+  el.appendChild(head);
 
   // The meta line reads: due date, then label, then note. The date goes first
   // because it is what the eye actually scans a column for.
@@ -1342,15 +1511,23 @@ function cardEl(card, nowIso, listName) {
     sub.appendChild(b);
   }
 
-  var dueText = BOARD.dueLabel(card.due, nowIso);
-  if (dueText) {
+  // A finished card says when it was finished, never when it was due. The
+  // deadline stopped mattering the moment the work was done, and "12 days late"
+  // on the one column where nothing can be late is worse than noise — it is
+  // wrong. Done is also the one state with no urgency to express, so it gets no
+  // urgency class: plain, muted text.
+  var done = card.list === 'done';
+  var stamp = done ? BOARD.doneLabel(card.done_at, nowIso)
+                   : BOARD.dueLabel(card.due, nowIso);
+  if (stamp) {
     var d = document.createElement('span');
-    d.className = 'due-' + BOARD.dueState(card, nowIso);
-    d.textContent = dueText;
+    d.className = done ? 'card-done' : 'due-' + BOARD.dueState(card, nowIso);
+    d.textContent = stamp;
     // 'Thu' and '20 Aug' are easier to read but carry less than the date did —
     // no year, no which-Thursday. The exact date stays one hover away rather
     // than being thrown out. Sliced the same way the editor's date field is.
-    d.title = String(card.due).slice(0, 10);
+    var exact = String((done ? card.done_at : card.due) || '').slice(0, 10);
+    if (exact) d.title = exact;
     sub.appendChild(d);
     if (bits.length) sub.appendChild(document.createTextNode(' · '));
   }
@@ -1375,6 +1552,64 @@ function cardEl(card, nowIso, listName) {
   // because they dragged a different card would be worse than either.
   wireCardDrag(el, card, listName);
   return el;
+}
+
+var SVG_NS = 'http://www.w3.org/2000/svg';
+// A plain five-pointed star, drawn once and either filled or left open.
+var STAR_PATH = 'M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25' +
+                'L7 14.14l-5-4.87 6.91-1.01L12 2z';
+
+/**
+ * The important toggle, on the card FRONT rather than inside the editor. It is
+ * a one-tap "this one next"; buried a tap deep in a panel it would cost the
+ * same as just dragging the card, and stop being worth having.
+ *
+ * Filled star for on, outline for off. The difference has to survive a glance
+ * in themes whose hues sit a few percent apart, and shape does that where
+ * colour alone does not — the same rule the overdue/today pills follow. Colour
+ * reinforces it, and the card grows an accent left edge so a starred card is
+ * findable from the far end of a column and not only from a 17px glyph.
+ */
+function starButton(card, listName) {
+  var b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'card-star';
+  b.dataset.card = card.id;       // how the next rebuild finds it again to refocus
+  b.setAttribute('aria-pressed', String(!!card.important));
+  var name = card.important ? 'Not important' : 'Mark important';
+  b.setAttribute('aria-label', name);
+  b.title = name;
+  // The card above is draggable on a wide screen, and the nearest draggable
+  // ancestor is what a gesture starting here would drag. Say no explicitly, so
+  // a tap on the star cannot turn into a card drag.
+  b.draggable = false;
+
+  var svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', card.important ? 'currentColor' : 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.6');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  var p = document.createElementNS(SVG_NS, 'path');
+  p.setAttribute('d', STAR_PATH);
+  svg.appendChild(p);
+  b.appendChild(svg);
+
+  // The card's own click opens its editor. Tapping the star must do one thing,
+  // not both — the same guard the editor's origin link uses.
+  b.addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    toggleImportant(card.id, listName);
+  });
+  // And the card's keydown handler calls preventDefault() on Enter and Space,
+  // which would swallow this button's own activation before it ever became a
+  // click. Stop those two here; every other key still reaches the card, so Tab
+  // and the rest are untouched.
+  b.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter' || ev.key === ' ') ev.stopPropagation();
+  });
+  return b;
 }
 
 /** Today's events, already in the payload — free context beside the cards. */
@@ -1417,6 +1652,83 @@ function endPos(list) {
   var inList = BOARD.group(state.board)[list];
   var last = inList.length ? inList[inList.length - 1].pos : null;
   return BOARD.posBetween(last, null);
+}
+
+/**
+ * The mirror of endPos: the position for a card jumped to the TOP of `list`.
+ * Read off the whole board rather than the filtered view for the same reason —
+ * a card the filter is hiding is still the neighbour this one lands above —
+ * and the neighbour is tested for length, never truthiness. `0` is a
+ * legitimate position, and posBetween(null, 0) is -1000, which is a perfectly
+ * good "above it".
+ */
+function topPos(list) {
+  var inList = BOARD.group(state.board)[list] || [];
+  var first = inList.length ? inList[0].pos : null;
+  return BOARD.posBetween(null, first);
+}
+
+/**
+ * Flip a card's important flag, and — only when switching it ON — jump the card
+ * to the top of the column it is already in.
+ *
+ * This is a one-time jump, deliberately NOT a pin. BOARD.group is untouched, so
+ * a starred card does not float above the others: newer cards can overtake it,
+ * and dragging it back down is an ordinary thing to do rather than a fight with
+ * the sort. The star says "this one matters"; the jump says "and I want to see
+ * it now". Making it permanent would quietly turn the star into a second
+ * ordering system layered on top of the one the columns already are.
+ *
+ * Switching it OFF moves nothing. Throwing a card somewhere else as a
+ * side-effect of un-starring it would be a second change nobody asked for.
+ *
+ * `listName` is the column the card is DRAWN in, not card.list: group() files a
+ * row with an unrecognised list under 'later', and the top the user means is
+ * the top of the column in front of them.
+ */
+function toggleImportant(id, listName) {
+  if (!boardAllowed) return;
+  var card = findCard(id);
+  if (!card) return;
+  var on = !card.important;
+
+  var ops = [{ op: 'cardEdit', id: id, important: on }];
+  var moved = false;
+  if (on) {
+    // Read before the local write below, off the whole board rather than the
+    // filtered view — endPos's reasoning, applied at the other end.
+    var inList = BOARD.group(state.board)[listName] || [];
+    // Already first: the jump is a no-op, and an op for it would spend an Apps
+    // Script call from a quota the whole family shares to change nothing.
+    if (!(inList.length && inList[0].id === id)) {
+      card.pos = topPos(listName);
+      moved = true;
+      // A pos-only cardMove, exactly the shape renormalizeList sends:
+      // cardMove_ writes only the fields an op carries, so leaving `list` out
+      // keeps the column — and the done_at stamp that goes with it — alone.
+      // Without that, starring something finished last week would restamp it as
+      // finished today, moving its "Done Thu" to "Done today" and resetting
+      // where it stands in the sweep.
+      ops.push({ op: 'cardMove', id: id, pos: card.pos });
+    }
+  }
+  card.important = on;
+  // Both ops stamp updated_at on the server whatever they carry, so the local
+  // row has to agree or the next fetch would visibly jump the age fade.
+  card.updated_at = new Date().toISOString();
+
+  // One local write covering both halves, saved before either op is queued: the
+  // flag and the jump are one action and the cache must never hold one without
+  // the other. Both then go into the same durable queue, so a flush that only
+  // gets the first through retries the second rather than dropping it.
+  save(CACHE_KEY, state);
+  announce(card.title + (!on ? ' no longer important'
+    : moved ? ' marked important, moved to the top of ' + BOARD_LIST_NAMES[listName]
+            : ' marked important'));
+  // Two enqueues means two repaints, the same as renormalizeList's batch. The
+  // focus restoration in renderBoard is derived from activeElement rather than
+  // armed once, so the star stays focused across both.
+  ops.forEach(function (op) { enqueue(op); });
 }
 
 function addCard(title) {

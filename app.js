@@ -1725,6 +1725,13 @@ function wireBoardControls() {
   opts.appendChild(segRow(LIST_OPTIONS, addCardList, function (v) { addCardList = v; }));
 
   filter.appendChild(segRow(FILTER_OPTIONS, boardFilter, function (v) {
+    // The sixth caller of the rebuild, and the last one to need this: on a
+    // browser that does not focus a button on click, a field inside the editor
+    // keeps focus, renderBoard's guard defers, and the pressed pill disagrees
+    // with the columns until something else blurs. Nothing is at risk here —
+    // filtering touches no state — but a view that ignores its own control is
+    // still wrong.
+    blurBoardField();
     boardFilter = v;
     renderBoard();
   }));

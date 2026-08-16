@@ -188,21 +188,55 @@ var FEEDS = (function () {
     });
   }
 
+  /** 'gy=2026&gm=8&gd=14' from a 'YYYY-MM-DD' key, unpadded as Hebcal wants. */
+  function hebcalDate(key) {
+    var p = String(key).split('-');
+    return 'gy=' + (+p[0]) + '&gm=' + (+p[1]) + '&gd=' + (+p[2]);
+  }
+
+  function converterUrl(key) {
+    return 'https://www.hebcal.com/converter?cfg=json&' + hebcalDate(key) + '&g2h=1&strict=1';
+  }
+
+  /**
+   * Both Hebcal URLs pin the date they are asking about.
+   *
+   * The converter always did, because it has to. /shabbat did not: it answers
+   * "the upcoming Shabbat" for whoever is asking, so its URL used to be
+   * byte-identical every day of the year - a single cache key whose correct
+   * answer changes every week. Nothing in this file controlled that response's
+   * lifetime, and on 14 Aug 2026 a cache somewhere between a tablet and Hebcal
+   * served the previous week's copy for days: the dashboard showed a correct,
+   * current Hebrew date beside last week's parsha and a candle time nine
+   * minutes late, with every internal freshness check satisfied.
+   *
+   * Pinning the date makes each day its own cache key, exactly like the
+   * converter, which also flips Hebcal's week-long max-age on the dated form
+   * from a hazard into a correct answer. `cache: 'no-cache'` on top forces
+   * revalidation rather than trusting any of it - the same defence, and for the
+   * same reason, as the one documented in sw.js.
+   */
+  function shabbatUrl(key) {
+    return 'https://www.hebcal.com/shabbat?cfg=json&zip=' + ZIP +
+           '&b=' + CANDLE_MINUTES + '&M=on&' + hebcalDate(key);
+  }
+
+  var REVALIDATE = { cache: 'no-cache' };
+
   function fetchJewish() {
-    var key = dateKeyIn(new Date()).split('-');       // TZ date, not device date
-    var conv = 'https://www.hebcal.com/converter?cfg=json&gy=' + (+key[0]) +
-               '&gm=' + (+key[1]) + '&gd=' + (+key[2]) + '&g2h=1&strict=1';
-    var shab = 'https://www.hebcal.com/shabbat?cfg=json&zip=' + ZIP +
-               '&b=' + CANDLE_MINUTES + '&M=on';
+    var key = dateKeyIn(new Date());                  // TZ date, not device date
 
     return Promise.all([
-      fetch(conv).then(function (r) { return r.json(); }),
-      fetch(shab).then(function (r) { return r.json(); })
+      fetch(converterUrl(key), REVALIDATE).then(function (r) { return r.json(); }),
+      fetch(shabbatUrl(key), REVALIDATE).then(function (r) { return r.json(); })
     ]).then(function (both) {
       var c = both[0], s = both[1];
       var rec = {
         at: Date.now(),
-        dateKey: dateKeyIn(new Date()),
+        // Stamped with the key the request was built from, not with "now". A
+        // fetch that straddles midnight describes the day it asked about, and
+        // refreshIfStale should see that and go again.
+        dateKey: key,
         hebrew: hebrewDate(c.hebrew),
         parsha: '',
         candles: null, havdalah: null,
@@ -241,6 +275,44 @@ var FEEDS = (function () {
 
   /* ---------- view ---------- */
 
+  /**
+   * The parsha, candle lighting and havdalah describe one specific Shabbat, and
+   * they stop being true the moment that Shabbat is over. This checks the
+   * payload's own timestamps rather than how long ago it was fetched, and that
+   * distinction is the whole point: on 14 Aug 2026 the record had been written
+   * that morning - fresh by every measure the app had - while the Shabbat half
+   * of it described the week before. Only the times inside it could give that
+   * away. Weather gets the same protection a different way, by refusing to
+   * render once it is old enough to lie (see WEATHER_SHOW_AGE).
+   *
+   * Passing a time also retires it. Once candles are lit that line disappears
+   * instead of sitting under Saturday's "Tonight" heading all day advertising a
+   * lighting that already happened, and once havdalah passes the block empties
+   * out rather than showing a Shabbat in the past tense.
+   *
+   * Anything unreadable is treated as expired. A candle-lighting time is the
+   * one number here that is worse wrong than missing.
+   */
+  function shabbatNow(j, nowMs) {
+    var out = { parsha: '', candles: null, havdalah: null };
+    if (!j) return out;
+
+    var lit = j.candles ? Date.parse(j.candles.iso) : NaN;
+    var done = j.havdalah ? Date.parse(j.havdalah.iso) : NaN;
+    var candlesAhead = !isNaN(lit) && nowMs < lit;
+    var havdalahAhead = !isNaN(done) && nowMs < done;
+
+    // Nothing in the block is still ahead, so it belongs to a Shabbat that is
+    // finished. A week-stale record and one that simply expired an hour ago are
+    // indistinguishable here, and both should show nothing.
+    if (!candlesAhead && !havdalahAhead) return out;
+
+    out.parsha = j.parsha || '';
+    if (candlesAhead) out.candles = j.candles;
+    if (havdalahAhead) out.havdalah = j.havdalah;
+    return out;
+  }
+
   function view() {
     var now = new Date();
     var dow = dowIn(now);
@@ -276,11 +348,15 @@ var FEEDS = (function () {
     }
 
     if (j) {
-      if (j.hebrew) v.sub += ' · ' + j.hebrew;
-      if (j.parsha) v.sub += ' · ' + j.parsha;
+      // The Hebrew date is dated by the request that fetched it, so it stands
+      // on its own; everything below is only as good as its own timestamps.
+      var shab = shabbatNow(j, now.getTime());
 
-      if (j.candles) v.aheadLines.push({ label: 'Candles', value: j.candles.time });
-      if (j.havdalah) v.aheadLines.push({ label: 'Havdalah', value: j.havdalah.time });
+      if (j.hebrew) v.sub += ' · ' + j.hebrew;
+      if (shab.parsha) v.sub += ' · ' + shab.parsha;
+
+      if (shab.candles) v.aheadLines.push({ label: 'Candles', value: shab.candles.time });
+      if (shab.havdalah) v.aheadLines.push({ label: 'Havdalah', value: shab.havdalah.time });
 
       // Thursday onward, Shabbat stops being a footnote.
       if (dow === 6) v.aheadLabel = 'Tonight';
@@ -291,8 +367,10 @@ var FEEDS = (function () {
       // Bottom bar: the single most time-critical thing, in priority order.
       if (j.fastBegins && isToday(j.fastBegins.iso)) v.alert = 'Fast begins ' + j.fastBegins.time;
       else if (j.fastEnds && isToday(j.fastEnds.iso)) v.alert = 'Fast ends ' + j.fastEnds.time;
-      else if (j.candles && isToday(j.candles.iso)) v.alert = 'Candles ' + j.candles.time;
-      else if (j.havdalah && isToday(j.havdalah.iso)) v.alert = 'Havdalah ' + j.havdalah.time;
+      // shab, not j: the alert bar is the most prominent thing on the screen and
+      // must not outlive the time it is announcing either.
+      else if (shab.candles && isToday(shab.candles.iso)) v.alert = 'Candles ' + shab.candles.time;
+      else if (shab.havdalah && isToday(shab.havdalah.iso)) v.alert = 'Havdalah ' + shab.havdalah.time;
 
       var soon = (j.holidays || [])
         .map(function (h) { return { title: h.title, days: daysUntil(h.date) }; })
@@ -313,7 +391,8 @@ var FEEDS = (function () {
     // Exposed for tests/feeds.test.js only.
     _test: { hhmm: hhmm, daysUntil: daysUntil, dateKeyIn: dateKeyIn, dowIn: dowIn,
              monthDayIn: monthDayIn, hebrewDate: hebrewDate, condition: condition,
-             isToday: isToday, rainPhrase: rainPhrase, hourLabel: hourLabel, TZ: TZ }
+             isToday: isToday, rainPhrase: rainPhrase, hourLabel: hourLabel, TZ: TZ,
+             shabbatNow: shabbatNow, shabbatUrl: shabbatUrl, converterUrl: converterUrl }
   };
 })();
 

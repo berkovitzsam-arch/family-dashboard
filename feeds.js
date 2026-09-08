@@ -223,6 +223,45 @@ var FEEDS = (function () {
 
   var REVALIDATE = { cache: 'no-cache' };
 
+  /**
+   * Everything the Shabbat window itself says, pulled out of a /shabbat payload.
+   *
+   * Candle lighting is a LIST, and that is the entire point of this function.
+   * Hebcal's window can hold more than one lighting - any yom tov adjoining
+   * Shabbat does it - and Rosh Hashana 5787 (Fri 11 to Sun 13 Sep 2026) holds
+   * two: 6:53 pm on the Friday and 7:51 pm on the Saturday night. The old loop
+   * assigned `rec.candles` on every candles item, so the last lighting silently
+   * overwrote the first and the dashboard offered 7:51 pm for a Shabbat that
+   * had already begun an hour earlier, beside a Sunday havdalah - a Shabbat two
+   * minutes long, if you read the two lines together.
+   *
+   * There is also no correct single lighting to keep: Friday's is the one to
+   * show midweek, Saturday's is the one to show on the Saturday. So both are
+   * stored and `shabbatNow` picks whichever is still ahead. Havdalah is a list
+   * for the same reason, at no extra cost.
+   *
+   * A yom tov window carries no `parashat` item at all, so `parsha` stays
+   * empty - that week genuinely has no parsha, and the header drops the field
+   * rather than naming the wrong one.
+   */
+  function shabbatTimes(items) {
+    var out = { parsha: '', candles: [], havdalah: [],
+                fastBegins: null, fastEnds: null, holidays: [] };
+    (items || []).forEach(function (it) {
+      var at = { iso: it.date, time: hhmm(it.date) };
+      if (it.category === 'candles') out.candles.push(at);
+      else if (it.category === 'havdalah') out.havdalah.push(at);
+      else if (it.category === 'parashat') out.parsha = it.title.replace(/^Parashat\s+/, '');
+      else if (it.category === 'zmanim' && it.subcat === 'fast') {
+        if (/begin/i.test(it.title)) out.fastBegins = at;
+        else out.fastEnds = at;
+      } else if (it.category === 'holiday' && it.subcat === 'major') {
+        out.holidays.push({ title: it.title, date: it.date });
+      }
+    });
+    return out;
+  }
+
   function fetchJewish() {
     var key = dateKeyIn(new Date());                  // TZ date, not device date
 
@@ -231,29 +270,13 @@ var FEEDS = (function () {
       fetch(shabbatUrl(key), REVALIDATE).then(function (r) { return r.json(); })
     ]).then(function (both) {
       var c = both[0], s = both[1];
-      var rec = {
-        at: Date.now(),
-        // Stamped with the key the request was built from, not with "now". A
-        // fetch that straddles midnight describes the day it asked about, and
-        // refreshIfStale should see that and go again.
-        dateKey: key,
-        hebrew: hebrewDate(c.hebrew),
-        parsha: '',
-        candles: null, havdalah: null,
-        fastBegins: null, fastEnds: null,
-        holidays: []
-      };
-      (s.items || []).forEach(function (it) {
-        if (it.category === 'candles') rec.candles = { iso: it.date, time: hhmm(it.date) };
-        else if (it.category === 'havdalah') rec.havdalah = { iso: it.date, time: hhmm(it.date) };
-        else if (it.category === 'parashat') rec.parsha = it.title.replace(/^Parashat\s+/, '');
-        else if (it.category === 'zmanim' && it.subcat === 'fast') {
-          if (/begin/i.test(it.title)) rec.fastBegins = { iso: it.date, time: hhmm(it.date) };
-          else rec.fastEnds = { iso: it.date, time: hhmm(it.date) };
-        } else if (it.category === 'holiday' && it.subcat === 'major') {
-          rec.holidays.push({ title: it.title, date: it.date });
-        }
-      });
+      var rec = shabbatTimes(s.items);
+      rec.at = Date.now();
+      // Stamped with the key the request was built from, not with "now". A
+      // fetch that straddles midnight describes the day it asked about, and
+      // refreshIfStale should see that and go again.
+      rec.dateKey = key;
+      rec.hebrew = hebrewDate(c.hebrew);
       save(JEWISH_KEY, rec);
     });
   }
@@ -293,23 +316,45 @@ var FEEDS = (function () {
    * Anything unreadable is treated as expired. A candle-lighting time is the
    * one number here that is worse wrong than missing.
    */
+  /**
+   * A cached record written before candle times became lists holds a single
+   * object instead. view() runs on first paint, before any refetch, so that
+   * shape has to keep working rather than blanking the block for one poll.
+   */
+  function timeList(x) {
+    if (!x) return [];
+    return Array.isArray(x) ? x : [x];
+  }
+
+  /**
+   * The EARLIEST entry still ahead of nowMs - earliest, not simply the first in
+   * the list, so the answer never depends on the order Hebcal sent its items
+   * in. Anything unparseable is skipped, i.e. counted as already past.
+   */
+  function nextAhead(list, nowMs) {
+    var best = null, bestMs = Infinity;
+    timeList(list).forEach(function (at) {
+      var ms = Date.parse(at && at.iso);
+      if (!isNaN(ms) && nowMs < ms && ms < bestMs) { best = at; bestMs = ms; }
+    });
+    return best;
+  }
+
   function shabbatNow(j, nowMs) {
     var out = { parsha: '', candles: null, havdalah: null };
     if (!j) return out;
 
-    var lit = j.candles ? Date.parse(j.candles.iso) : NaN;
-    var done = j.havdalah ? Date.parse(j.havdalah.iso) : NaN;
-    var candlesAhead = !isNaN(lit) && nowMs < lit;
-    var havdalahAhead = !isNaN(done) && nowMs < done;
+    var candles = nextAhead(j.candles, nowMs);
+    var havdalah = nextAhead(j.havdalah, nowMs);
 
     // Nothing in the block is still ahead, so it belongs to a Shabbat that is
     // finished. A week-stale record and one that simply expired an hour ago are
     // indistinguishable here, and both should show nothing.
-    if (!candlesAhead && !havdalahAhead) return out;
+    if (!candles && !havdalah) return out;
 
     out.parsha = j.parsha || '';
-    if (candlesAhead) out.candles = j.candles;
-    if (havdalahAhead) out.havdalah = j.havdalah;
+    out.candles = candles;
+    out.havdalah = havdalah;
     return out;
   }
 
@@ -392,7 +437,8 @@ var FEEDS = (function () {
     _test: { hhmm: hhmm, daysUntil: daysUntil, dateKeyIn: dateKeyIn, dowIn: dowIn,
              monthDayIn: monthDayIn, hebrewDate: hebrewDate, condition: condition,
              isToday: isToday, rainPhrase: rainPhrase, hourLabel: hourLabel, TZ: TZ,
-             shabbatNow: shabbatNow, shabbatUrl: shabbatUrl, converterUrl: converterUrl }
+             shabbatNow: shabbatNow, shabbatTimes: shabbatTimes,
+             shabbatUrl: shabbatUrl, converterUrl: converterUrl }
   };
 })();
 

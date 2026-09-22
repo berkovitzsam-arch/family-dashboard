@@ -757,6 +757,7 @@ function render() {
 
   if (!document.getElementById('choresView').hidden) renderChores();
   if (boardVisible()) renderBoard();
+  if (typeof TABLET_UI !== 'undefined') TABLET_UI.render();
 }
 
 /* ---------- self-update ---------- */
@@ -2581,6 +2582,7 @@ function init() {
     } catch (e) { /* offline support unavailable; the app still works online */ }
   }
 
+  if (typeof TABLET_UI !== 'undefined') TABLET_UI.init();
   render();
   // Not refresh(): a reload that restored the board has already asked for the
   // board (showView above), and that response carries the dashboard too.

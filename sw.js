@@ -9,7 +9,7 @@
  * to no longer strands anyone on an old build.
  */
 
-var CACHE = 'fd-shell-v13';
+var CACHE = 'fd-shell-v14';
 
 
 var SHELL = [
@@ -19,6 +19,8 @@ var SHELL = [
   './feeds.js',
   './chores.js',
   './board.js',
+  './tablet.js',
+  './tablet-ui.js',
   './manifest.json',
   './fonts/baloo2-latin.woff2'
 ];
@@ -81,6 +83,8 @@ function changed(oldRes, newRes) {
 self.addEventListener('fetch', function (e) {
   var req = e.request;
   if (req.method !== 'GET') return;
+  // Date-qualified public data owns its cache in tablet-ui.js, not the shell.
+  if (new URL(req.url).pathname.endsWith('/hir-schedule.json')) return;
   if (req.url.indexOf('script.google.com') !== -1) return;
   if (req.url.indexOf(self.registration.scope) !== 0) return;
 

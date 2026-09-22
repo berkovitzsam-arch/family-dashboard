@@ -535,6 +535,55 @@
   .rowbtn { margin-left: auto; flex: none; font: 600 13px var(--display); color: var(--accent-strong);
     background: none; border: 0; padding: 6px 8px; cursor: pointer; border-radius: 6px; }
   .rowbtn:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+
+  #prepView[hidden], #holyView[hidden] { display: none; }
+  body.tablet-prep #calendarColumn > section:not(#prepView) { display: none; }
+  #prepView { margin-top: 0; }
+  #prepCandles { color: var(--accent-strong); margin-bottom: 12px; }
+  .prep-task { display: flex; gap: 14px; align-items: center; min-height: 48px; padding: 7px 0; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 20px; }
+  .prep-task input { width: 24px; height: 24px; accent-color: var(--accent2); flex-shrink: 0; }
+  .prep-task input:checked + span { text-decoration: line-through; color: var(--mute); }
+  body.tablet-holy #dashboardView, body.tablet-holy #choresView, body.tablet-holy #boardView,
+  body.tablet-holy .switch { display: none !important; }
+  body.tablet-holy #gear { top: auto; bottom: 10px; }
+  body.tablet-holy #menu { top: auto; bottom: 48px; }
+  #holyView { width: 100%; }
+  .holy-head { display: flex; justify-content: space-between; align-items: center; gap: 18px; border-bottom: 2px solid var(--ink); padding: 0 0 16px; }
+  .holy-head h1 { font: 600 clamp(24px, 3vw, 42px)/1.1 var(--display); margin: 0 0 8px; }
+  .holy-head > div:last-child { text-align: right; }
+  #holyClock { font: 600 clamp(24px, 3vw, 42px)/1.1 var(--display); }
+  #holyEnd, #holyDate { color: var(--mute); margin-top: 8px; }
+  .holy-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; padding-top: 18px; }
+  .holy-columns section { margin: 0; min-width: 0; }
+  .holy-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 5px 0; font-size: clamp(15px, 1.8vw, 22px); border-bottom: 1px solid var(--line); }
+  .holy-row strong { white-space: nowrap; font-weight: 600; }
+  .holy-detail { color: var(--mute); font-size: 12px; margin-top: 5px; }
+  .holy-speaker { color: var(--accent2); margin: 4px 0 12px; }
+  .holy-weather { margin-top: 20px; }
+  #holyHours { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+  .holy-hour { border-left: 1px solid var(--line); padding-left: 10px; font-size: 13px; }
+  .hour-label { font-weight: 600; }
+  .hour-temp { font: 600 30px/1.2 var(--display); margin: 6px 0; }
+  @media (max-width: 700px) {
+    .holy-columns { gap: 20px; }
+    .holy-head { align-items: start; }
+    #holyHours { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 16px; }
+    #holyEnd { max-width: 190px; }
+  }
+  @media (orientation: portrait) and (min-width: 701px) {
+    #holyHours { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }
+    .holy-hour { font-size: 16px; }
+    .hour-temp { font-size: 36px; }
+    .holy-row { font-size: 19px; padding: 7px 0; }
+  }
+  @media (max-height: 720px) and (min-width: 701px) {
+    body.tablet-holy { --pad: 16px; }
+    .holy-row { font-size: 16px; padding: 3px 0; }
+    .holy-head { padding-bottom: 10px; }
+    .holy-columns { padding-top: 12px; }
+    .holy-columns h2, .holy-weather h2 { margin-bottom: 6px; }
+    .holy-weather { margin-top: 12px; }
+  }
 </style>
 </head>
 <body>
@@ -554,7 +603,11 @@
 <div class="weekarc" id="weekarc" aria-hidden="true"></div>
 
 <div class="cols">
-  <div>
+  <div id="calendarColumn">
+    <section id="prepView" hidden aria-labelledby="prepHeading">
+      <h2 id="prepHeading">Getting ready for Shabbat</h2>
+      <div id="prepCandles"></div><div id="prepTasks"></div>
+    </section>
     <section>
       <h2><span class="em">📅 </span>Today</h2>
       <div id="today"></div>
@@ -598,6 +651,14 @@
 <div class="pending" id="pending"></div>
 </div>
 
+<main id="holyView" hidden aria-label="Shabbat and Yom Tov display">
+  <div class="holy-head"><div><h1 id="holyTitle"></h1><div id="holyDate"></div></div><div><div id="holyClock"></div><div id="holyEnd"></div></div></div>
+  <div class="holy-columns">
+    <section><h2>Zmanim</h2><div id="holyZmanim"></div><div class="holy-detail">Hebcal · Bronx 10463 · New York time</div></section>
+    <section><h2>HIR · Main minyan</h2><div id="holyServices"></div><div id="hirChecked" class="holy-detail"></div></section>
+  </div>
+  <section class="holy-weather"><h2>Hourly weather</h2><div id="holyHours"></div><div id="weatherChecked" class="holy-detail"></div></section>
+</main>
 <div id="choresView" hidden>
   <header class="chores-head">
     <div class="day">Chores</div>
@@ -670,6 +731,8 @@
   <button type="button" role="menuitemradio" data-theme="almanac" aria-pressed="false">
     <span class="swatch" style="background:#f5eede; border-color:#a5381b"></span>Almanac<span class="check">✓</span></button>
   <hr>
+  <button type="button" role="menuitemcheckbox" id="tabletToggle" aria-pressed="false">Kitchen tablet modes<span class="check">✓</span></button>
+  <div id="tabletStatus" role="status"></div>
   <button type="button" role="menuitemcheckbox" id="emojiToggle" aria-pressed="false">
     Emoji<span class="check">✓</span></button>
   <button type="button" role="menuitemcheckbox" id="awakeToggle" aria-pressed="false">
@@ -682,6 +745,8 @@
 <script src="feeds.js"></script>
 <script src="chores.js"></script>
 <script src="board.js"></script>
+<script src="tablet.js"></script>
+<script src="tablet-ui.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -88,7 +88,7 @@ var TABLET_UI = (function () {
     var hebrew = node('bdi', new Date(date + 'T12:00:00Z').toLocaleDateString('he-IL-u-ca-hebrew', { timeZone: TABLET.TZ, day: 'numeric', month: 'long', year: 'numeric' }));
     hebrew.dir = 'rtl'; hebrew.lang = 'he'; el('holyDate').appendChild(hebrew);
     el('holyClock').textContent = TABLET.time(new Date(now).toISOString());
-    el('holyEnd').textContent = 'Ends ' + TABLET.day(TABLET.key(p.end)) + ' · ' + TABLET.time(p.end);
+    el('holyEnd').textContent = 'Havdalah ' + TABLET.day(TABLET.key(p.end)) + ' · ' + TABLET.time(p.end);
     var z = el('holyZmanim'); z.replaceChildren();
     var times = data.zmanim && data.zmanim[date];
     if (times) ZMANIM.forEach(function (pair) { if (times[pair[0]]) row(z, pair[1], TABLET.time(times[pair[0]])); });

@@ -1,72 +1,30 @@
 {
   "version": 1,
-  "checkedAt": "2026-10-02T19:17:07.241Z",
+  "checkedAt": "2026-10-09T13:02:09.352Z",
   "services": [
     {
-      "at": "2026-10-02T08:00:00-04:00",
-      "label": "Hoshana Rabah Live! Shacharit",
-      "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October2-3.pdf"
-    },
-    {
-      "at": "2026-10-02T18:28:00-04:00",
+      "at": "2026-10-09T18:17:00-04:00",
       "label": "Mincha & Kabbalat Shabbat",
       "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October2-3.pdf"
+      "sourceUrl": "https://www.thebayit.org/calendar?date_start=specific+date&date_start_x=0&date_start_date=2026-10-01"
     },
     {
-      "at": "2026-10-03T09:00:00-04:00",
+      "at": "2026-10-10T09:00:00-04:00",
       "label": "Shacharit",
       "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October2-3.pdf"
+      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October9-10.pdf"
     },
     {
-      "at": "2026-10-03T09:45:00-04:00",
-      "label": "Israeli Hakafot begin with Hallel",
-      "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October2-3.pdf"
-    },
-    {
-      "at": "2026-10-03T10:30:00-04:00",
-      "label": "Yizkor (not before 10:30am)",
-      "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October2-3.pdf"
-    },
-    {
-      "at": "2026-10-03T17:50:00-04:00",
+      "at": "2026-10-10T17:55:00-04:00",
       "label": "Mincha",
       "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October2-3.pdf"
+      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October9-10.pdf"
     },
     {
-      "at": "2026-10-03T18:40:00-04:00",
-      "label": "Maariv/Hakafot",
-      "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October2-3.pdf"
-    },
-    {
-      "at": "2026-10-04T09:00:00-04:00",
-      "label": "Shacharit w/Hallel",
-      "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October2-3.pdf"
-    },
-    {
-      "at": "2026-10-04T10:00:00-04:00",
-      "label": "Hakafot",
-      "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October2-3.pdf"
-    },
-    {
-      "at": "2026-10-04T18:15:00-04:00",
-      "label": "Mincha",
-      "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October2-3.pdf"
-    },
-    {
-      "at": "2026-10-04T19:08:00-04:00",
+      "at": "2026-10-10T18:58:00-04:00",
       "label": "Maariv",
       "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October2-3.pdf"
+      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October9-10.pdf"
     }
   ]
 }

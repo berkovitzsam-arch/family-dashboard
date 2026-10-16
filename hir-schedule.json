@@ -1,30 +1,24 @@
 {
   "version": 1,
-  "checkedAt": "2026-10-09T13:02:09.352Z",
+  "checkedAt": "2026-10-16T13:03:52.141Z",
   "services": [
     {
-      "at": "2026-10-09T18:17:00-04:00",
+      "at": "2026-10-16T18:06:00-04:00",
       "label": "Mincha & Kabbalat Shabbat",
       "minyan": "main",
-      "sourceUrl": "https://www.thebayit.org/calendar?date_start=specific+date&date_start_x=0&date_start_date=2026-10-01"
+      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October16-17.pdf"
     },
     {
-      "at": "2026-10-10T09:00:00-04:00",
-      "label": "Shacharit",
-      "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October9-10.pdf"
-    },
-    {
-      "at": "2026-10-10T17:55:00-04:00",
+      "at": "2026-10-17T17:45:00-04:00",
       "label": "Mincha",
       "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October9-10.pdf"
+      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October16-17.pdf"
     },
     {
-      "at": "2026-10-10T18:58:00-04:00",
+      "at": "2026-10-17T18:48:00-04:00",
       "label": "Maariv",
       "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October9-10.pdf"
+      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October16-17.pdf"
     }
   ]
 }

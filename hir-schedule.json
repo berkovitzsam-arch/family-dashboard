@@ -1,24 +1,30 @@
 {
   "version": 1,
-  "checkedAt": "2026-10-16T13:03:52.141Z",
+  "checkedAt": "2026-10-23T13:01:51.965Z",
   "services": [
     {
-      "at": "2026-10-16T18:06:00-04:00",
+      "at": "2026-10-23T17:56:00-04:00",
       "label": "Mincha & Kabbalat Shabbat",
       "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October16-17.pdf"
+      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October23-24.pdf"
     },
     {
-      "at": "2026-10-17T17:45:00-04:00",
+      "at": "2026-10-24T09:00:00-04:00",
+      "label": "Shacharit",
+      "minyan": "main",
+      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October23-24.pdf"
+    },
+    {
+      "at": "2026-10-24T17:35:00-04:00",
       "label": "Mincha",
       "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October16-17.pdf"
+      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October23-24.pdf"
     },
     {
-      "at": "2026-10-17T18:48:00-04:00",
+      "at": "2026-10-24T18:37:00-04:00",
       "label": "Maariv",
       "minyan": "main",
-      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October16-17.pdf"
+      "sourceUrl": "https://images.shulcloud.com/111/uploads/bulletin/2026/October23-24.pdf"
     }
   ]
 }
